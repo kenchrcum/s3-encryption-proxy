@@ -164,6 +164,7 @@ type S3Backend interface {
 ## Development Workflow
 
 ### Git Practices
+- **ALWAYS commit your work** - Never leave uncommitted changes at the end of a task
 - Feature branches from main
 - Clear commit messages: `type(scope): description`
 - Pull requests with tests and documentation
