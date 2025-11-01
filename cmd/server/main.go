@@ -68,10 +68,13 @@ func main() {
 		logger.WithError(err).Fatal("Failed to create S3 client")
 	}
 
-	// Initialize key manager (Phase 5 feature)
+	// Load encryption password (required for both single password and KMS modes)
+	var encryptionPassword string
 	var keyManager crypto.KeyManager
-	encryptionPassword := cfg.Encryption.Password
-	if encryptionPassword == "" && cfg.Encryption.KeyFile != "" {
+
+	if cfg.Encryption.Password != "" {
+		encryptionPassword = cfg.Encryption.Password
+	} else if cfg.Encryption.KeyFile != "" {
 		keyData, err := os.ReadFile(cfg.Encryption.KeyFile)
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to read encryption key file")
@@ -80,23 +83,33 @@ func main() {
 	}
 
 	if encryptionPassword == "" {
-		logger.Fatal("Encryption password is required")
+		logger.Fatal("Encryption password is required (set ENCRYPTION_PASSWORD or encryption.password)")
 	}
 
-	// Initialize key manager with initial password
-	keyManager, err = crypto.NewKeyManager(encryptionPassword)
-	if err != nil {
-		logger.WithError(err).Fatal("Failed to create key manager")
-	}
+	// Key Manager is optional - use it only if explicitly enabled via config
+	// This maintains backward compatibility with single password mode
+	var activePassword string
+	if cfg.Encryption.KeyManager.Enabled {
+		// Initialize key manager (Phase 5 feature - KMS mode)
+		keyManager, err = crypto.NewKeyManager(encryptionPassword)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to create key manager")
+		}
 
-	// Get active key from key manager
-	activePassword, keyVersion, err := keyManager.GetActiveKey()
-	if err != nil {
-		logger.WithError(err).Fatal("Failed to get active key")
+		// Get active key from key manager
+		var keyVersion int
+		activePassword, keyVersion, err = keyManager.GetActiveKey()
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to get active key")
+		}
+		logger.WithFields(logrus.Fields{
+			"key_version": keyVersion,
+		}).Info("Key manager (KMS mode) initialized")
+	} else {
+		// Single password mode (backward compatible)
+		activePassword = encryptionPassword
+		logger.Info("Using single password mode (no key rotation)")
 	}
-	logger.WithFields(logrus.Fields{
-		"key_version": keyVersion,
-	}).Info("Key manager initialized")
 
 	// Initialize compression engine if enabled
 	var compressionEngine crypto.CompressionEngine

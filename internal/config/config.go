@@ -38,6 +38,12 @@ type EncryptionConfig struct {
 	KeyFile            string   `yaml:"key_file" env:"ENCRYPTION_KEY_FILE"`
 	PreferredAlgorithm string   `yaml:"preferred_algorithm" env:"ENCRYPTION_PREFERRED_ALGORITHM"`
 	SupportedAlgorithms []string `yaml:"supported_algorithms" env:"ENCRYPTION_SUPPORTED_ALGORITHMS"`
+	KeyManager         KeyManagerConfig `yaml:"key_manager"`
+}
+
+// KeyManagerConfig holds key manager (KMS) configuration.
+type KeyManagerConfig struct {
+	Enabled bool `yaml:"enabled" env:"KEY_MANAGER_ENABLED"` // Enable key rotation/KMS mode
 }
 
 // CompressionConfig holds compression settings.
@@ -182,8 +188,16 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("ENCRYPTION_PREFERRED_ALGORITHM"); v != "" {
 		config.Encryption.PreferredAlgorithm = v
 	}
-	// Note: Supported algorithms from env would need custom parsing (comma-separated)
-	// For now, we'll leave it to config file
+	if v := os.Getenv("ENCRYPTION_SUPPORTED_ALGORITHMS"); v != "" {
+		// Comma-separated list of algorithms
+		config.Encryption.SupportedAlgorithms = strings.Split(v, ",")
+		for i := range config.Encryption.SupportedAlgorithms {
+			config.Encryption.SupportedAlgorithms[i] = strings.TrimSpace(config.Encryption.SupportedAlgorithms[i])
+		}
+	}
+	if v := os.Getenv("KEY_MANAGER_ENABLED"); v != "" {
+		config.Encryption.KeyManager.Enabled = v == "true" || v == "1"
+	}
 	if v := os.Getenv("TLS_ENABLED"); v != "" {
 		config.TLS.Enabled = v == "true" || v == "1"
 	}
