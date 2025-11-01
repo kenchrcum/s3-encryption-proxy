@@ -41,7 +41,7 @@ func (m *mockS3Client) PutObject(ctx context.Context, bucket, key string, reader
 	return nil
 }
 
-func (m *mockS3Client) GetObject(ctx context.Context, bucket, key string) (io.ReadCloser, map[string]string, error) {
+func (m *mockS3Client) GetObject(ctx context.Context, bucket, key string, versionID *string, rangeHeader *string) (io.ReadCloser, map[string]string, error) {
 	if err := m.errors[bucket+"/"+key+"/get"]; err != nil {
 		return nil, nil, err
 	}
@@ -56,7 +56,7 @@ func (m *mockS3Client) GetObject(ctx context.Context, bucket, key string) (io.Re
 	return io.NopCloser(bytes.NewReader(data)), meta, nil
 }
 
-func (m *mockS3Client) DeleteObject(ctx context.Context, bucket, key string) error {
+func (m *mockS3Client) DeleteObject(ctx context.Context, bucket, key string, versionID *string) error {
 	if err := m.errors[bucket+"/"+key+"/delete"]; err != nil {
 		return err
 	}
@@ -65,7 +65,7 @@ func (m *mockS3Client) DeleteObject(ctx context.Context, bucket, key string) err
 	return nil
 }
 
-func (m *mockS3Client) HeadObject(ctx context.Context, bucket, key string) (map[string]string, error) {
+func (m *mockS3Client) HeadObject(ctx context.Context, bucket, key string, versionID *string) (map[string]string, error) {
 	if err := m.errors[bucket+"/"+key+"/head"]; err != nil {
 		return nil, err
 	}
@@ -93,6 +93,70 @@ func (m *mockS3Client) ListObjects(ctx context.Context, bucket, prefix string, o
 		}
 	}
 	return objects, nil
+}
+
+func (m *mockS3Client) CreateMultipartUpload(ctx context.Context, bucket, key string, metadata map[string]string) (string, error) {
+	return "upload-id-123", nil
+}
+
+func (m *mockS3Client) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader) (string, error) {
+	return "\"etag-123\"", nil
+}
+
+func (m *mockS3Client) CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []s3.CompletedPart) (string, error) {
+	return "\"final-etag\"", nil
+}
+
+func (m *mockS3Client) AbortMultipartUpload(ctx context.Context, bucket, key, uploadID string) error {
+	return nil
+}
+
+func (m *mockS3Client) ListParts(ctx context.Context, bucket, key, uploadID string) ([]s3.PartInfo, error) {
+	return []s3.PartInfo{}, nil
+}
+
+func (m *mockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string) (string, map[string]string, error) {
+	// Get source
+	srcReader, srcMeta, err := m.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	defer srcReader.Close()
+	data, _ := io.ReadAll(srcReader)
+	
+	// Put as destination
+	if err := m.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(data), metadata); err != nil {
+		return "", nil, err
+	}
+	
+	resultMeta := make(map[string]string)
+	if srcMeta != nil {
+		for k, v := range srcMeta {
+			resultMeta[k] = v
+		}
+	}
+	return "\"copied-etag\"", resultMeta, nil
+}
+
+func (m *mockS3Client) DeleteObjects(ctx context.Context, bucket string, keys []s3.ObjectIdentifier) ([]s3.DeletedObject, []s3.ErrorObject, error) {
+	deleted := []s3.DeletedObject{}
+	errors := []s3.ErrorObject{}
+	
+	for _, k := range keys {
+		if err := m.DeleteObject(ctx, bucket, k.Key, nil); err != nil {
+			errors = append(errors, s3.ErrorObject{
+				Key:     k.Key,
+				Code:    "InternalError",
+				Message: err.Error(),
+			})
+		} else {
+			deleted = append(deleted, s3.DeletedObject{
+				Key: k.Key,
+			})
+		}
+	}
+	
+	return deleted, errors, nil
 }
 
 type s3Error struct {
@@ -185,13 +249,13 @@ func TestHandler_HandlePutObject(t *testing.T) {
 				t.Errorf("expected status %d, got %d", tt.wantCode, w.Code)
 			}
 
-			if tt.wantCode == http.StatusOK {
-				// Verify object was stored
-				_, _, err := mockClient.GetObject(context.Background(), tt.bucket, tt.key)
-				if err != nil {
-					t.Errorf("object should have been stored: %v", err)
-				}
+		if tt.wantCode == http.StatusOK {
+			// Verify object was stored
+			_, _, err := mockClient.GetObject(context.Background(), tt.bucket, tt.key, nil, nil)
+			if err != nil {
+				t.Errorf("object should have been stored: %v", err)
 			}
+		}
 		})
 	}
 }
@@ -246,7 +310,7 @@ func TestHandler_HandleDeleteObject(t *testing.T) {
 	}
 
 	// Verify object was deleted
-	_, _, err := mockClient.GetObject(context.Background(), "test-bucket", "test-key")
+	_, _, err := mockClient.GetObject(context.Background(), "test-bucket", "test-key", nil, nil)
 	if err == nil {
 		t.Error("object should have been deleted")
 	}
