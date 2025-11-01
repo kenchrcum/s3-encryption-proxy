@@ -216,9 +216,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("listen_addr is required")
 	}
 
-	if c.Backend.Endpoint == "" {
-		return fmt.Errorf("backend.endpoint is required")
-	}
+	// Endpoint is optional - if empty, AWS SDK will use default AWS endpoints
 
 	if c.Backend.AccessKey == "" {
 		return fmt.Errorf("backend.access_key is required")

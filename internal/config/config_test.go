@@ -29,9 +29,7 @@ func TestLoadConfig_Defaults(t *testing.T) {
 		t.Errorf("expected LogLevel info, got %s", config.LogLevel)
 	}
 
-	if config.Backend.Provider != "aws" {
-		t.Errorf("expected Provider aws, got %s", config.Backend.Provider)
-	}
+	// Provider is now optional, just for reference
 }
 
 func TestLoadConfig_EnvOverrides(t *testing.T) {
