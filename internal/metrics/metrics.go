@@ -8,6 +8,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+    "strings"
 )
 
 var (
@@ -144,9 +145,30 @@ func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 
 // RecordHTTPRequest records an HTTP request metric.
 func (m *Metrics) RecordHTTPRequest(method, path string, status int, duration time.Duration, bytes int64) {
-	m.httpRequestsTotal.WithLabelValues(method, path, http.StatusText(status)).Inc()
-	m.httpRequestDuration.WithLabelValues(method, path, http.StatusText(status)).Observe(duration.Seconds())
-	m.httpRequestBytes.WithLabelValues(method, path).Add(float64(bytes))
+    label := sanitizePathLabel(path)
+    m.httpRequestsTotal.WithLabelValues(method, label, http.StatusText(status)).Inc()
+    m.httpRequestDuration.WithLabelValues(method, label, http.StatusText(status)).Observe(duration.Seconds())
+    m.httpRequestBytes.WithLabelValues(method, label).Add(float64(bytes))
+}
+
+// sanitizePathLabel reduces high-cardinality paths to stable labels.
+// Examples:
+// "/metrics" => "/metrics"
+// "/bucket/key/long/path" => "/bucket/*"
+func sanitizePathLabel(path string) string {
+    if path == "" || path == "/" {
+        return "/"
+    }
+    // Trim query if any (defensive; callers typically pass Path only)
+    if i := strings.IndexByte(path, '?'); i >= 0 {
+        path = path[:i]
+    }
+    // Split into segments
+    segs := strings.Split(strings.TrimPrefix(path, "/"), "/")
+    if len(segs) <= 1 {
+        return "/" + segs[0]
+    }
+    return "/" + segs[0] + "/*"
 }
 
 // RecordS3Operation records an S3 operation metric.

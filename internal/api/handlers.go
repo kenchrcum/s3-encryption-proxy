@@ -208,29 +208,35 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read decrypted data and record metrics
-	decryptedData, err := io.ReadAll(decryptedReader)
-	if err != nil {
-		h.logger.WithError(err).Error("Failed to read decrypted data")
-		s3Err := &S3Error{
-			Code:       "InternalError",
-			Message:    "Failed to read decrypted data",
-			Resource:   r.URL.Path,
-			HTTPStatus: http.StatusInternalServerError,
-		}
-		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
-		if h.auditLogger != nil {
-			alg := metadata[crypto.MetaAlgorithm]
-			if alg == "" {
-				alg = crypto.AlgorithmAES256GCM
-			}
-			h.auditLogger.LogDecrypt(bucket, key, alg, 0, false, err, decryptDuration, nil)
-		}
-		return
-	}
-	decryptedSize := int64(len(decryptedData))
-	h.metrics.RecordEncryptionOperation("decrypt", decryptDuration, decryptedSize)
+    // Decide streaming vs buffering based on Range
+    var decryptedData []byte
+    var decryptedSize int64
+    if rangeHeader != nil && *rangeHeader != "" {
+        // Buffer for range processing
+        dd, err := io.ReadAll(decryptedReader)
+        if err != nil {
+            h.logger.WithError(err).Error("Failed to read decrypted data")
+            s3Err := &S3Error{
+                Code:       "InternalError",
+                Message:    "Failed to read decrypted data",
+                Resource:   r.URL.Path,
+                HTTPStatus: http.StatusInternalServerError,
+            }
+            s3Err.WriteXML(w)
+            h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+            if h.auditLogger != nil {
+                alg := metadata[crypto.MetaAlgorithm]
+                if alg == "" {
+                    alg = crypto.AlgorithmAES256GCM
+                }
+                h.auditLogger.LogDecrypt(bucket, key, alg, 0, false, err, decryptDuration, nil)
+            }
+            return
+        }
+        decryptedData = dd
+        decryptedSize = int64(len(decryptedData))
+    }
+    h.metrics.RecordEncryptionOperation("decrypt", decryptDuration, decryptedSize)
 
 	// Get algorithm and key version from metadata for audit logging
 	algorithm := metadata[crypto.MetaAlgorithm]
@@ -285,7 +291,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
         w.WriteHeader(http.StatusPartialContent)
     } else {
-        // Set decrypted metadata headers
+        // Set decrypted metadata headers and stream body
         for k, v := range decMetadata {
             if !isEncryptionMetadata(k) {
                 w.Header().Set(k, v)
@@ -294,20 +300,28 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
         if versionID != nil && *versionID != "" {
             w.Header().Set("x-amz-version-id", *versionID)
         }
-        w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
         w.WriteHeader(http.StatusOK)
+        n64, err := io.Copy(w, decryptedReader)
+        if err != nil {
+            h.logger.WithError(err).Error("Failed to write response")
+            h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), n64)
+            return
+        }
+        h.metrics.RecordS3Operation("GetObject", bucket, time.Since(start))
+        h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), n64)
+        return
     }
 
-	// Copy decrypted object data to response
-	n, err := w.Write(outputData)
-	if err != nil {
-		h.logger.WithError(err).Error("Failed to write response")
-		h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), int64(n))
-		return
-	}
+    // For ranged responses, write buffered bytes
+    n, err := w.Write(outputData)
+    if err != nil {
+        h.logger.WithError(err).Error("Failed to write response")
+        h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), int64(n))
+        return
+    }
 
-	h.metrics.RecordS3Operation("GetObject", bucket, time.Since(start))
-	h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), int64(n))
+    h.metrics.RecordS3Operation("GetObject", bucket, time.Since(start))
+    h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), int64(n))
 }
 
 // handlePutObject handles PUT object requests.
@@ -409,13 +423,11 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		h.cache.Delete(ctx, bucket, key)
 	}
 
-	// Record encryption metrics (read encrypted data size for accurate bytes)
-	encryptedData, _ := io.ReadAll(encryptedReader)
-	h.metrics.RecordEncryptionOperation("encrypt", encryptDuration, originalBytes)
-	encryptedReader = bytes.NewReader(encryptedData)
+    // Record encryption metrics using original bytes
+    h.metrics.RecordEncryptionOperation("encrypt", encryptDuration, originalBytes)
 
-	// Upload encrypted object with encryption metadata
-	err = h.s3Client.PutObject(ctx, bucket, key, encryptedReader, encMetadata)
+    // Upload encrypted object with encryption metadata (streaming)
+    err = h.s3Client.PutObject(ctx, bucket, key, encryptedReader, encMetadata)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -439,8 +451,12 @@ func isStandardMetadata(key string) bool {
 		"Content-Type":   true,
 		"Content-Length": true,
 		"ETag":           true,
-		"Cache-Control":  true,
-		"Expires":        true,
+        "Cache-Control":  true,
+        "Expires":        true,
+        "Content-Encoding": true,
+        "Content-Language": true,
+        "Content-Disposition": true,
+        "Last-Modified": true,
 	}
 	return standardHeaders[key]
 }

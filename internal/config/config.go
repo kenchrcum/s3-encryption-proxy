@@ -31,6 +31,7 @@ type BackendConfig struct {
 	SecretKey string `yaml:"secret_key" env:"BACKEND_SECRET_KEY"`
 	Provider  string `yaml:"provider" env:"BACKEND_PROVIDER"` // aws, wasabi, hetzner, minio, digitalocean, backblaze, cloudflare, linode, scaleway, oracle, idrive
 	UseSSL    bool   `yaml:"use_ssl" env:"BACKEND_USE_SSL"`
+    UsePathStyle bool `yaml:"use_path_style" env:"BACKEND_USE_PATH_STYLE"`
 }
 
 // EncryptionConfig holds encryption-related configuration.
@@ -180,6 +181,9 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("BACKEND_PROVIDER"); v != "" {
 		config.Backend.Provider = v
 	}
+    if v := os.Getenv("BACKEND_USE_PATH_STYLE"); v != "" {
+        config.Backend.UsePathStyle = v == "true" || v == "1"
+    }
 	if v := os.Getenv("ENCRYPTION_PASSWORD"); v != "" {
 		config.Encryption.Password = v
 	}

@@ -132,8 +132,8 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 		awsCfg.BaseEndpoint = aws.String(endpoint)
 	}
 
-	// Use path-style addressing if configured or if UseSSL is false (common for local/MinIO)
-	if cfg.UseSSL == false {
+    // Use path-style addressing if configured or if UseSSL is false (common for local/MinIO)
+    if cfg.UsePathStyle || cfg.UseSSL == false {
 		s3Options = append(s3Options, func(o *s3.Options) {
 			o.UsePathStyle = true
 		})
@@ -182,20 +182,13 @@ func validateEndpoint(endpoint string) error {
 
 // PutObject uploads an object to S3.
 func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string) error {
-	// Read the entire body (for now - will optimize for streaming later)
-	body, err := io.ReadAll(reader)
-	if err != nil {
-		return fmt.Errorf("failed to read object data: %w", err)
-	}
-
 	input := &s3.PutObjectInput{
 		Bucket:   aws.String(bucket),
 		Key:      aws.String(key),
-		Body:     bytes.NewReader(body),
+        Body:     reader,
 		Metadata: convertMetadata(metadata),
 	}
-
-	_, err = c.client.PutObject(ctx, input)
+    _, err := c.client.PutObject(ctx, input)
 	if err != nil {
 		return fmt.Errorf("failed to put object %s/%s: %w", bucket, key, err)
 	}
@@ -359,20 +352,15 @@ func (c *s3Client) CreateMultipartUpload(ctx context.Context, bucket, key string
 
 // UploadPart uploads a part of a multipart upload.
 func (c *s3Client) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader) (string, error) {
-	body, err := io.ReadAll(reader)
-	if err != nil {
-		return "", fmt.Errorf("failed to read part data: %w", err)
-	}
-
 	input := &s3.UploadPartInput{
 		Bucket:     aws.String(bucket),
 		Key:        aws.String(key),
 		UploadId:   aws.String(uploadID),
 		PartNumber: aws.Int32(partNumber),
-		Body:       bytes.NewReader(body),
+        Body:       reader,
 	}
 
-	result, err := c.client.UploadPart(ctx, input)
+    result, err := c.client.UploadPart(ctx, input)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload part %d for %s/%s: %w", partNumber, bucket, key, err)
 	}

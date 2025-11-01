@@ -52,6 +52,11 @@ func (c *compressionEngine) ShouldCompress(size int64, contentType string) bool 
 		return false
 	}
 
+    // Skip known non-compressible types
+    if isNonCompressibleType(contentType) {
+        return false
+    }
+
 	// Check content type
 	if len(c.contentTypes) == 0 {
 		// Default compressible types if none specified
@@ -71,6 +76,33 @@ func (c *compressionEngine) ShouldCompress(size int64, contentType string) bool 
 	}
 
 	return c.isCompressibleType(contentType, c.contentTypes)
+}
+
+// isNonCompressibleType returns true for content types that should not be compressed.
+func isNonCompressibleType(contentType string) bool {
+    ct := strings.ToLower(strings.TrimSpace(contentType))
+    if ct == "" {
+        return false
+    }
+    // Common non-compressible prefixes
+    nonPrefixes := []string{
+        "image/",
+        "video/",
+        "audio/",
+        "application/zip",
+        "application/gzip",
+        "application/x-gzip",
+        "application/x-7z-compressed",
+        "application/x-rar-compressed",
+        "application/x-tar",
+        "application/pdf",
+    }
+    for _, p := range nonPrefixes {
+        if strings.HasPrefix(ct, p) {
+            return true
+        }
+    }
+    return false
 }
 
 // isCompressibleType checks if a content type matches any of the compressible types.
