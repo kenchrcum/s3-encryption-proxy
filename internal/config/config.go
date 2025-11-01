@@ -32,8 +32,10 @@ type BackendConfig struct {
 
 // EncryptionConfig holds encryption-related configuration.
 type EncryptionConfig struct {
-	Password string `yaml:"password" env:"ENCRYPTION_PASSWORD"`
-	KeyFile  string `yaml:"key_file" env:"ENCRYPTION_KEY_FILE"`
+	Password           string   `yaml:"password" env:"ENCRYPTION_PASSWORD"`
+	KeyFile            string   `yaml:"key_file" env:"ENCRYPTION_KEY_FILE"`
+	PreferredAlgorithm string   `yaml:"preferred_algorithm" env:"ENCRYPTION_PREFERRED_ALGORITHM"`
+	SupportedAlgorithms []string `yaml:"supported_algorithms" env:"ENCRYPTION_SUPPORTED_ALGORITHMS"`
 }
 
 // CompressionConfig holds compression settings.
@@ -152,6 +154,11 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("ENCRYPTION_KEY_FILE"); v != "" {
 		config.Encryption.KeyFile = v
 	}
+	if v := os.Getenv("ENCRYPTION_PREFERRED_ALGORITHM"); v != "" {
+		config.Encryption.PreferredAlgorithm = v
+	}
+	// Note: Supported algorithms from env would need custom parsing (comma-separated)
+	// For now, we'll leave it to config file
 	if v := os.Getenv("TLS_ENABLED"); v != "" {
 		config.TLS.Enabled = v == "true" || v == "1"
 	}

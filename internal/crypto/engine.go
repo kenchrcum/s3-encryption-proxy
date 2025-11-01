@@ -34,9 +34,6 @@ const (
 	MetaCompressionEnabled = "x-amz-meta-compression-enabled"
 	MetaCompressionAlgorithm = "x-amz-meta-compression-algorithm"
 	MetaCompressionOriginalSize = "x-amz-meta-compression-original-size"
-
-	// Algorithm name
-	AlgorithmAES256GCM = "AES256-GCM"
 )
 
 // EncryptionEngine provides encryption and decryption functionality.
