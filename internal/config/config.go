@@ -10,13 +10,14 @@ import (
 
 // Config holds the complete application configuration.
 type Config struct {
-	ListenAddr    string              `yaml:"listen_addr" env:"LISTEN_ADDR"`
-	LogLevel      string              `yaml:"log_level" env:"LOG_LEVEL"`
-	Backend       BackendConfig       `yaml:"backend"`
-	Encryption    EncryptionConfig    `yaml:"encryption"`
-	Compression   CompressionConfig   `yaml:"compression"`
-	TLS           TLSConfig           `yaml:"tls"`
-	Server        ServerConfig        `yaml:"server"`
+	ListenAddr  string            `yaml:"listen_addr" env:"LISTEN_ADDR"`
+	LogLevel    string            `yaml:"log_level" env:"LOG_LEVEL"`
+	Backend     BackendConfig     `yaml:"backend"`
+	Encryption  EncryptionConfig  `yaml:"encryption"`
+	Compression CompressionConfig `yaml:"compression"`
+	TLS         TLSConfig         `yaml:"tls"`
+	Server      ServerConfig      `yaml:"server"`
+	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
 }
 
 // BackendConfig holds S3 backend configuration.
@@ -60,6 +61,13 @@ type ServerConfig struct {
 	MaxHeaderBytes    int           `yaml:"max_header_bytes" env:"SERVER_MAX_HEADER_BYTES"`
 }
 
+// RateLimitConfig holds rate limiting configuration.
+type RateLimitConfig struct {
+	Enabled bool          `yaml:"enabled" env:"RATE_LIMIT_ENABLED"`
+	Limit   int           `yaml:"limit" env:"RATE_LIMIT_REQUESTS"`
+	Window  time.Duration `yaml:"window" env:"RATE_LIMIT_WINDOW"`
+}
+
 // LoadConfig loads configuration from a file and environment variables.
 func LoadConfig(path string) (*Config, error) {
 	config := &Config{
@@ -83,6 +91,11 @@ func LoadConfig(path string) (*Config, error) {
 			IdleTimeout:       60 * time.Second,
 			ReadHeaderTimeout: 10 * time.Second,
 			MaxHeaderBytes:    1 << 20, // 1MB
+		},
+		RateLimit: RateLimitConfig{
+			Enabled: false,
+			Limit:   100,
+			Window:  60 * time.Second,
 		},
 	}
 
@@ -139,6 +152,56 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("ENCRYPTION_KEY_FILE"); v != "" {
 		config.Encryption.KeyFile = v
 	}
+	if v := os.Getenv("TLS_ENABLED"); v != "" {
+		config.TLS.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("TLS_CERT_FILE"); v != "" {
+		config.TLS.CertFile = v
+	}
+	if v := os.Getenv("TLS_KEY_FILE"); v != "" {
+		config.TLS.KeyFile = v
+	}
+	// Server timeouts from environment
+	if v := os.Getenv("SERVER_READ_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Server.ReadTimeout = d
+		}
+	}
+	if v := os.Getenv("SERVER_WRITE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Server.WriteTimeout = d
+		}
+	}
+	if v := os.Getenv("SERVER_IDLE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Server.IdleTimeout = d
+		}
+	}
+	if v := os.Getenv("SERVER_READ_HEADER_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Server.ReadHeaderTimeout = d
+		}
+	}
+	if v := os.Getenv("SERVER_MAX_HEADER_BYTES"); v != "" {
+		var maxBytes int
+		if _, err := fmt.Sscanf(v, "%d", &maxBytes); err == nil && maxBytes > 0 {
+			config.Server.MaxHeaderBytes = maxBytes
+		}
+	}
+	if v := os.Getenv("RATE_LIMIT_ENABLED"); v != "" {
+		config.RateLimit.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("RATE_LIMIT_REQUESTS"); v != "" {
+		var limit int
+		if _, err := fmt.Sscanf(v, "%d", &limit); err == nil && limit > 0 {
+			config.RateLimit.Limit = limit
+		}
+	}
+	if v := os.Getenv("RATE_LIMIT_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.RateLimit.Window = d
+		}
+	}
 }
 
 // Validate validates the configuration and returns an error if invalid.
@@ -172,6 +235,16 @@ func (c *Config) Validate() error {
 		}
 		if !validLevels[c.LogLevel] {
 			return fmt.Errorf("invalid log_level: %s (must be debug, info, warn, or error)", c.LogLevel)
+		}
+	}
+
+	// Validate TLS configuration
+	if c.TLS.Enabled {
+		if c.TLS.CertFile == "" {
+			return fmt.Errorf("tls.cert_file is required when TLS is enabled")
+		}
+		if c.TLS.KeyFile == "" {
+			return fmt.Errorf("tls.key_file is required when TLS is enabled")
 		}
 	}
 

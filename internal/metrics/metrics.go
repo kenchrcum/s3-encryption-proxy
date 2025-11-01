@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"net/http"
+	"runtime"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -16,16 +17,20 @@ var (
 
 // Metrics holds all application metrics.
 type Metrics struct {
-	httpRequestsTotal      *prometheus.CounterVec
-	httpRequestDuration    *prometheus.HistogramVec
-	httpRequestBytes       *prometheus.CounterVec
-	s3OperationsTotal      *prometheus.CounterVec
-	s3OperationDuration    *prometheus.HistogramVec
-	s3OperationErrors      *prometheus.CounterVec
-	encryptionOperations   *prometheus.CounterVec
-	encryptionDuration     *prometheus.HistogramVec
-	encryptionErrors        *prometheus.CounterVec
-	encryptionBytes         *prometheus.CounterVec
+	httpRequestsTotal    *prometheus.CounterVec
+	httpRequestDuration  *prometheus.HistogramVec
+	httpRequestBytes     *prometheus.CounterVec
+	s3OperationsTotal    *prometheus.CounterVec
+	s3OperationDuration  *prometheus.HistogramVec
+	s3OperationErrors    *prometheus.CounterVec
+	encryptionOperations *prometheus.CounterVec
+	encryptionDuration   *prometheus.HistogramVec
+	encryptionErrors     *prometheus.CounterVec
+	encryptionBytes      *prometheus.CounterVec
+	activeConnections    prometheus.Gauge
+	goroutines           prometheus.Gauge
+	memoryAllocBytes     prometheus.Gauge
+	memorySysBytes       prometheus.Gauge
 }
 
 // NewMetrics creates a new metrics instance.
@@ -110,6 +115,30 @@ func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"operation"},
 		),
+		activeConnections: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "active_connections",
+				Help: "Number of active HTTP connections",
+			},
+		),
+		goroutines: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "goroutines_total",
+				Help: "Number of goroutines",
+			},
+		),
+		memoryAllocBytes: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "memory_alloc_bytes",
+				Help: "Number of bytes allocated and not yet freed",
+			},
+		),
+		memorySysBytes: factory.NewGauge(
+			prometheus.GaugeOpts{
+				Name: "memory_sys_bytes",
+				Help: "Total bytes of memory obtained from OS",
+			},
+		),
 	}
 }
 
@@ -141,6 +170,36 @@ func (m *Metrics) RecordEncryptionOperation(operation string, duration time.Dura
 // RecordEncryptionError records an encryption operation error.
 func (m *Metrics) RecordEncryptionError(operation, errorType string) {
 	m.encryptionErrors.WithLabelValues(operation, errorType).Inc()
+}
+
+// UpdateSystemMetrics updates system-level metrics (goroutines, memory).
+func (m *Metrics) UpdateSystemMetrics() {
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	m.goroutines.Set(float64(runtime.NumGoroutine()))
+	m.memoryAllocBytes.Set(float64(memStats.Alloc))
+	m.memorySysBytes.Set(float64(memStats.Sys))
+}
+
+// IncrementActiveConnections increments the active connections counter.
+func (m *Metrics) IncrementActiveConnections() {
+	m.activeConnections.Inc()
+}
+
+// DecrementActiveConnections decrements the active connections counter.
+func (m *Metrics) DecrementActiveConnections() {
+	m.activeConnections.Dec()
+}
+
+// StartSystemMetricsCollector starts a goroutine that periodically updates system metrics.
+func (m *Metrics) StartSystemMetricsCollector() {
+	ticker := time.NewTicker(5 * time.Second)
+	go func() {
+		for range ticker.C {
+			m.UpdateSystemMetrics()
+		}
+	}()
 }
 
 // Handler returns the HTTP handler for metrics endpoint.

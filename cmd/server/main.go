@@ -57,6 +57,9 @@ func main() {
 	m := metrics.NewMetrics()
 	metrics.SetVersion(version)
 
+	// Start system metrics collector
+	m.StartSystemMetricsCollector()
+
 	// Initialize S3 client
 	s3Client, err := s3.NewClient(&cfg.Backend)
 	if err != nil {
@@ -122,6 +125,22 @@ func main() {
 	// Apply middleware
 	httpHandler := middleware.RecoveryMiddleware(logger)(router)
 	httpHandler = middleware.LoggingMiddleware(logger)(httpHandler)
+	httpHandler = middleware.SecurityHeadersMiddleware()(httpHandler)
+
+	// Add rate limiting if enabled
+	if cfg.RateLimit.Enabled {
+		rateLimiter := middleware.NewRateLimiter(
+			cfg.RateLimit.Limit,
+			cfg.RateLimit.Window,
+			logger,
+		)
+		defer rateLimiter.Stop()
+		httpHandler = middleware.RateLimitMiddleware(rateLimiter)(httpHandler)
+		logger.WithFields(logrus.Fields{
+			"limit":  cfg.RateLimit.Limit,
+			"window": cfg.RateLimit.Window,
+		}).Info("Rate limiting enabled")
+	}
 
 	// Create HTTP server
 	server := &http.Server{
@@ -136,8 +155,19 @@ func main() {
 
 	// Start server in goroutine
 	go func() {
-		logger.WithField("addr", cfg.ListenAddr).Info("Starting HTTP server")
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if cfg.TLS.Enabled {
+			logger.WithFields(logrus.Fields{
+				"addr":      cfg.ListenAddr,
+				"cert_file": cfg.TLS.CertFile,
+				"key_file":  cfg.TLS.KeyFile,
+			}).Info("Starting HTTPS server")
+			err = server.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		} else {
+			logger.WithField("addr", cfg.ListenAddr).Info("Starting HTTP server")
+			err = server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			logger.WithError(err).Fatal("Failed to start server")
 		}
 	}()

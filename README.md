@@ -194,6 +194,22 @@ The gateway provides health check endpoints:
 - `/live` - Liveness probe (for Kubernetes)
 - `/metrics` - Prometheus metrics
 
+### Metrics
+
+The gateway exports comprehensive Prometheus metrics:
+
+- **HTTP Metrics**: Request counts, durations, bytes transferred
+- **S3 Operations**: Operation counts, durations, error rates
+- **Encryption**: Encryption/decryption counts, durations, throughput
+- **System Metrics**: Active connections, goroutines, memory usage
+
+Example metrics:
+- `http_requests_total` - Total HTTP requests
+- `encryption_operations_total` - Total encryption operations
+- `active_connections` - Current active connections
+- `goroutines_total` - Number of goroutines
+- `memory_alloc_bytes` - Memory allocated
+
 ## API Usage
 
 ### Upload Object (PUT)
@@ -246,18 +262,58 @@ curl "http://localhost:8080/my-bucket?prefix=test"
 - [ ] Range requests
 - [ ] Error translation
 
-### Phase 4: Production Features (Planned)
-- [ ] TLS support
-- [ ] Advanced monitoring
-- [ ] Performance optimization
-- [ ] Security hardening
+### Phase 4: Production Features ?
+- [x] TLS/HTTPS support
+- [x] Advanced monitoring and metrics (goroutines, memory usage, active connections)
+- [x] Performance benchmarks
+- [x] Security hardening (security headers, rate limiting)
+- [x] Load testing utilities
+
+## Security Features
+
+### TLS/HTTPS Support
+The gateway supports TLS/HTTPS encryption. Enable it in configuration:
+
+```yaml
+tls:
+  enabled: true
+  cert_file: /path/to/cert.pem
+  key_file: /path/to/key.pem
+```
+
+Or via environment variables:
+```bash
+export TLS_ENABLED=true
+export TLS_CERT_FILE=/path/to/cert.pem
+export TLS_KEY_FILE=/path/to/key.pem
+```
+
+### Security Headers
+The gateway automatically sets security headers on all responses:
+- `X-Frame-Options: DENY`
+- `X-Content-Type-Options: nosniff`
+- `X-XSS-Protection: 1; mode=block`
+- `Strict-Transport-Security` (for TLS connections)
+- `Content-Security-Policy: default-src 'self'`
+- `Referrer-Policy: strict-origin-when-cross-origin`
+
+### Rate Limiting
+Rate limiting can be enabled to protect against abuse:
+
+```yaml
+rate_limit:
+  enabled: true
+  limit: 100      # Requests per window
+  window: "60s"   # Time window
+```
 
 ## Security Considerations
 
 - **Encryption Password**: Store encryption passwords securely (use secrets management)
 - **Backend Credentials**: Use IAM roles or secure credential storage
-- **Network**: Deploy behind TLS termination (e.g., Kubernetes Ingress)
+- **Network**: Deploy behind TLS termination (e.g., Kubernetes Ingress) or enable built-in TLS
 - **Access Control**: Restrict gateway access to authorized clients
+- **Rate Limiting**: Enable rate limiting in production to prevent abuse
 
 ## Contributing
 

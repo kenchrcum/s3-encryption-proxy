@@ -6,3 +6,12 @@ data:
   backend-endpoint: "https://s3.amazonaws.com"
   backend-region: "us-east-1"
   backend-provider: "aws"
+  # Rate limiting (Phase 4)
+  rate-limit-enabled: "false"
+  rate-limit-requests: "100"
+  rate-limit-window: "60s"
+  # Server timeouts (Phase 4)
+  server-read-timeout: "15s"
+  server-write-timeout: "15s"
+  server-idle-timeout: "60s"
+  server-read-header-timeout: "10s"

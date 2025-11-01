@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: s3-encryption-gateway
+  labels:
+    app: s3-encryption-gateway
+spec:
+  selector:
+    matchLabels:
+      app: s3-encryption-gateway
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s

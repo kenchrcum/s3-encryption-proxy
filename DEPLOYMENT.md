@@ -2,7 +2,7 @@
 
 ## Overview
 
-The S3 Encryption Gateway is designed for containerized deployment in Kubernetes environments. This document outlines the containerization and orchestration strategy.
+The S3 Encryption Gateway is designed for containerized deployment in Kubernetes environments. This document outlines the containerization and orchestration strategy, including all Phase 4 production features.
 
 ## Docker Container Design
 
@@ -11,7 +11,7 @@ The S3 Encryption Gateway is designed for containerized deployment in Kubernetes
 #### Dockerfile Structure
 ```dockerfile
 # Build stage
-FROM golang:1.22-alpine AS builder
+FROM golang:1.25-alpine AS builder
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
@@ -23,7 +23,7 @@ FROM alpine:3.20
 RUN apk --no-cache add ca-certificates tzdata
 WORKDIR /root/
 COPY --from=builder /app/s3-encryption-gateway .
-USER nobody
+USER gateway
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
@@ -44,107 +44,33 @@ ENTRYPOINT ["./s3-encryption-gateway"]
 - **Multi-stage builds**: Separate build and runtime environments
 
 #### Security Hardening
-- **Non-root user**: Run as `nobody` or dedicated user
+- **Non-root user**: Run as `gateway` user (UID 1000)
 - **Minimal attack surface**: Remove unnecessary packages
 - **Read-only filesystem**: Use read-only root filesystem where possible
 - **Security scanning**: Integrate Trivy or similar scanners
-
-### Image Metadata
-```dockerfile
-LABEL org.opencontainers.image.title="S3 Encryption Gateway"
-LABEL org.opencontainers.image.description="Transparent S3 encryption proxy"
-LABEL org.opencontainers.image.vendor="Your Organization"
-LABEL org.opencontainers.image.version="v1.0.0"
-LABEL org.opencontainers.image.created="2024-01-01T00:00:00Z"
-```
 
 ## Kubernetes Deployment
 
 ### Core Deployment Manifest
 
-#### Deployment
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: s3-encryption-gateway
-  labels:
-    app: s3-encryption-gateway
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: s3-encryption-gateway
-  template:
-    metadata:
-      labels:
-        app: s3-encryption-gateway
-    spec:
-      containers:
-      - name: gateway
-        image: your-registry/s3-encryption-gateway:v1.0.0
-        ports:
-        - containerPort: 8080
-          name: http
-        env:
-        - name: LISTEN_ADDR
-          value: ":8080"
-        - name: ENCRYPTION_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: s3-gateway-secrets
-              key: encryption-password
-        - name: BACKEND_ENDPOINT
-          valueFrom:
-            configMapKeyRef:
-              name: s3-gateway-config
-              key: backend-endpoint
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: http
-          initialDelaySeconds: 5
-          periodSeconds: 5
-        securityContext:
-          allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: true
-          runAsNonRoot: true
-          runAsUser: 65534
-          capabilities:
-            drop:
-            - ALL
+The main deployment manifest is located at `k8s/deployment.yaml`. Apply it with:
+
+```bash
+kubectl apply -f k8s/deployment.yaml
 ```
+
+#### Deployment Features
+- **Replicas**: 2 (configurable)
+- **Resource limits**: CPU 500m, Memory 256Mi
+- **Health probes**: Liveness and readiness
+- **Security**: Non-root user, read-only filesystem
 
 ### Service Definition
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: s3-encryption-gateway
-spec:
-  selector:
-    app: s3-encryption-gateway
-  ports:
-  - port: 80
-    targetPort: 8080
-    protocol: TCP
-  type: ClusterIP
-```
+
+The service is included in `k8s/deployment.yaml`. It exposes the gateway on port 80 internally.
 
 ### Ingress Configuration
+
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -175,24 +101,30 @@ spec:
 ## Configuration Management
 
 ### ConfigMap for Application Config
+
+The ConfigMap at `k8s/configmap.yaml` includes Phase 4 configuration options:
+
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: s3-gateway-config
+  name: s3-encryption-gateway-config
 data:
   backend-endpoint: "https://s3.us-east-1.amazonaws.com"
   backend-region: "us-east-1"
-  log-level: "info"
-  max-connections: "100"
-  request-timeout: "30s"
-  compression-enabled: "false"  # Set to "true" to enable compression
-  compression-min-size: "1024"  # Minimum object size to compress (bytes)
-  compression-algorithm: "gzip" # gzip, zstd, etc.
-  compression-level: "6"        # Compression level (1-9)
+  # Phase 4: Rate limiting
+  rate-limit-enabled: "false"
+  rate-limit-requests: "100"
+  rate-limit-window: "60s"
+  # Phase 4: Server timeouts
+  server-read-timeout: "15s"
+  server-write-timeout: "15s"
+  server-idle-timeout: "60s"
+  server-read-header-timeout: "10s"
 ```
 
 ### Secret for Sensitive Data
+
 ```yaml
 apiVersion: v1
 kind: Secret
@@ -206,6 +138,8 @@ data:
 ```
 
 ### Environment Variables
+
+**Core Configuration:**
 - **LISTEN_ADDR**: Server bind address (default ":8080")
 - **ENCRYPTION_PASSWORD**: Password for key derivation
 - **BACKEND_ENDPOINT**: S3 backend endpoint URL
@@ -220,6 +154,25 @@ data:
 - **COMPRESSION_ALGORITHM**: Compression algorithm (gzip, zstd, default: gzip)
 - **COMPRESSION_LEVEL**: Compression level 1-9 (default: 6)
 
+### Phase 4 Configuration Options
+
+#### TLS Configuration
+- **TLS_ENABLED**: Enable TLS/HTTPS (true/false, default: false)
+- **TLS_CERT_FILE**: Path to TLS certificate file
+- **TLS_KEY_FILE**: Path to TLS private key file
+
+#### Rate Limiting (Phase 4)
+- **RATE_LIMIT_ENABLED**: Enable rate limiting (true/false, default: false)
+- **RATE_LIMIT_REQUESTS**: Maximum requests per window (default: 100)
+- **RATE_LIMIT_WINDOW**: Time window for rate limiting (e.g., "60s", default: 60s)
+
+#### Server Timeouts (Phase 4)
+- **SERVER_READ_TIMEOUT**: Read timeout duration (default: 15s)
+- **SERVER_WRITE_TIMEOUT**: Write timeout duration (default: 15s)
+- **SERVER_IDLE_TIMEOUT**: Idle connection timeout (default: 60s)
+- **SERVER_READ_HEADER_TIMEOUT**: Header read timeout (default: 10s)
+- **SERVER_MAX_HEADER_BYTES**: Maximum header size in bytes (default: 1048576)
+
 ## Health Checks and Monitoring
 
 ### Health Endpoints
@@ -227,36 +180,45 @@ data:
 - **GET /ready**: Readiness probe - full dependency check
 - **GET /metrics**: Prometheus metrics endpoint
 
-### Prometheus Metrics
-```go
-// Example metrics
-var (
-	requestsTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "s3_gateway_requests_total",
-			Help: "Total number of S3 requests",
-		},
-		[]string{"method", "bucket", "status"},
-	)
+### Prometheus Metrics (Phase 4)
 
-	encryptionDuration = prometheus.NewHistogramVec(
-		prometheus.HistogramOpts{
-			Name: "s3_gateway_encryption_duration_seconds",
-			Help: "Time spent on encryption/decryption",
-		},
-		[]string{"operation"},
-	)
+The gateway exports comprehensive Prometheus metrics:
 
-	activeConnections = prometheus.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "s3_gateway_active_connections",
-			Help: "Number of active connections",
-		},
-	)
-)
+#### HTTP Metrics
+- `http_requests_total` - Total HTTP requests (labels: method, path, status)
+- `http_request_duration_seconds` - Request duration histogram
+- `http_request_bytes_total` - Total bytes transferred
+
+#### S3 Operation Metrics
+- `s3_operations_total` - Total S3 operations (labels: operation, bucket)
+- `s3_operation_duration_seconds` - S3 operation duration
+- `s3_operation_errors_total` - S3 operation errors (labels: operation, bucket, error_type)
+
+#### Encryption Metrics
+- `encryption_operations_total` - Encryption/decryption operations (labels: operation)
+- `encryption_duration_seconds` - Encryption duration histogram
+- `encryption_bytes_total` - Total bytes encrypted/decrypted
+- `encryption_errors_total` - Encryption errors (labels: operation, error_type)
+
+#### System Metrics (Phase 4)
+- `active_connections` - Current active HTTP connections (gauge)
+- `goroutines_total` - Number of goroutines (gauge)
+- `memory_alloc_bytes` - Memory allocated (gauge)
+- `memory_sys_bytes` - System memory usage (gauge)
+
+All metrics are automatically collected and updated every 5 seconds.
+
+### Monitoring Integration (Phase 4)
+
+Apply the ServiceMonitor manifest (`k8s/servicemonitor.yaml`) to enable Prometheus scraping:
+
+```bash
+kubectl apply -f k8s/servicemonitor.yaml
 ```
 
-### Monitoring Integration
+The ServiceMonitor automatically discovers the gateway service and scrapes metrics from `/metrics` endpoint every 30 seconds.
+
+**ServiceMonitor Configuration:**
 ```yaml
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
@@ -270,16 +232,29 @@ spec:
   - port: http
     path: /metrics
     interval: 30s
+    scrapeTimeout: 10s
 ```
 
 ## Security Configuration
 
-### Network Policies
+### Network Policies (Phase 4)
+
+Apply the NetworkPolicy manifest (`k8s/networkpolicy.yaml`) for network isolation:
+
+```bash
+kubectl apply -f k8s/networkpolicy.yaml
+```
+
+This restricts:
+- **Ingress**: Only from ingress controllers and Prometheus
+- **Egress**: Only to S3 endpoints (HTTPS) and DNS
+
+**NetworkPolicy Configuration:**
 ```yaml
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: s3-gateway-netpol
+  name: s3-encryption-gateway-netpol
 spec:
   podSelector:
     matchLabels:
@@ -292,6 +267,9 @@ spec:
     - namespaceSelector:
         matchLabels:
           name: ingress-nginx
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring
     ports:
     - protocol: TCP
       port: 8080
@@ -302,6 +280,57 @@ spec:
     ports:
     - protocol: TCP
       port: 443  # HTTPS to S3
+```
+
+### Security Headers (Phase 4)
+
+The gateway automatically sets security headers on all responses:
+- `X-Frame-Options: DENY` - Prevents clickjacking
+- `X-Content-Type-Options: nosniff` - Prevents MIME type sniffing
+- `X-XSS-Protection: 1; mode=block` - Enables XSS protection
+- `Strict-Transport-Security` - HSTS for TLS connections
+- `Content-Security-Policy: default-src 'self'` - CSP protection
+- `Referrer-Policy: strict-origin-when-cross-origin` - Referrer policy
+- `Permissions-Policy` - Restricts browser features
+
+These headers are automatically applied via middleware and require no configuration.
+
+### Rate Limiting (Phase 4)
+
+Rate limiting protects against abuse and DDoS attacks. Configure via ConfigMap or environment variables:
+
+```yaml
+# In ConfigMap
+rate-limit-enabled: "true"
+rate-limit-requests: "100"
+rate-limit-window: "60s"
+```
+
+**Rate Limiting Features:**
+- Token bucket algorithm
+- Per-client (IP address) limiting
+- Configurable limits and time windows
+- Automatic cleanup of old entries
+- Returns HTTP 429 (Too Many Requests) when limit exceeded
+
+**Example Deployment Configuration:**
+```yaml
+env:
+- name: RATE_LIMIT_ENABLED
+  valueFrom:
+    configMapKeyRef:
+      name: s3-encryption-gateway-config
+      key: rate-limit-enabled
+- name: RATE_LIMIT_REQUESTS
+  valueFrom:
+    configMapKeyRef:
+      name: s3-encryption-gateway-config
+      key: rate-limit-requests
+- name: RATE_LIMIT_WINDOW
+  valueFrom:
+    configMapKeyRef:
+      name: s3-encryption-gateway-config
+      key: rate-limit-window
 ```
 
 ### Pod Security Standards
@@ -325,10 +354,49 @@ spec:
 ```
 
 ### TLS Configuration
-- **External TLS**: Terminated at ingress level
-- **Internal TLS**: Optional for service-to-service communication
+
+The gateway supports both external TLS termination (at ingress) and internal TLS termination.
+
+#### Internal TLS (Phase 4)
+
+The gateway can terminate TLS directly:
+
+```yaml
+# In ConfigMap or environment variables
+TLS_ENABLED: "true"
+TLS_CERT_FILE: "/etc/tls/tls.crt"
+TLS_KEY_FILE: "/etc/tls/tls.key"
+```
+
+**Kubernetes Secret for TLS:**
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: s3-gateway-tls
+type: kubernetes.io/tls
+data:
+  tls.crt: <base64-encoded-cert>
+  tls.key: <base64-encoded-key>
+```
+
+**Mount in Deployment:**
+```yaml
+volumeMounts:
+- name: tls-certs
+  mountPath: /etc/tls
+  readOnly: true
+volumes:
+- name: tls-certs
+  secret:
+    secretName: s3-gateway-tls
+```
+
+#### External TLS (Ingress)
+
 - **Certificate management**: cert-manager with Let's Encrypt
 - **TLS versions**: TLS 1.2+ only
+- Recommended for production (simpler certificate management)
 
 ## Resource Management
 
@@ -343,18 +411,32 @@ resources:
     cpu: "500m"
 ```
 
-### Horizontal Pod Autoscaling
+### Horizontal Pod Autoscaling (Phase 4)
+
+Apply the HPA manifest (`k8s/hpa.yaml`) for automatic scaling:
+
+```bash
+kubectl apply -f k8s/hpa.yaml
+```
+
+The HPA scales based on:
+- **CPU utilization** (target: 70%)
+- **Memory utilization** (target: 80%)
+- **Min replicas**: 2
+- **Max replicas**: 10
+
+**HPA Configuration:**
 ```yaml
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
-  name: s3-gateway-hpa
+  name: s3-encryption-gateway
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
     kind: Deployment
     name: s3-encryption-gateway
-  minReplicas: 3
+  minReplicas: 2
   maxReplicas: 10
   metrics:
   - type: Resource
@@ -370,6 +452,10 @@ spec:
         type: Utilization
         averageUtilization: 80
 ```
+
+**Scaling Behavior:**
+- **Scale Up**: Aggressive (100% or +2 pods per 15s)
+- **Scale Down**: Conservative (50% per 60s with 5min stabilization)
 
 ### Vertical Pod Autoscaling (Optional)
 ```yaml
@@ -425,13 +511,11 @@ spec:
 ## Logging and Observability
 
 ### Structured Logging
-```go
-logger := logrus.New()
-logger.SetFormatter(&logrus.JSONFormatter{
-    TimestampFormat: time.RFC3339,
-})
-logger.SetLevel(logrus.InfoLevel)
-```
+The gateway uses structured JSON logging with logrus. Logs include:
+- Request ID tracking
+- Operation context (bucket, key, operation)
+- Error details
+- Performance metrics
 
 ### Log Aggregation
 ```yaml
@@ -484,88 +568,116 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     - name: Build Docker image
-      run: docker build -t s3-gateway:${{ github.sha }} .
+      run: |
+        docker build -t s3-encryption-gateway:${{ github.sha }} .
     - name: Push to registry
-      run: docker push your-registry/s3-gateway:${{ github.sha }}
-    - name: Deploy to staging
-      run: kubectl set image deployment/s3-gateway gateway=s3-gateway:${{ github.sha }} -n staging
+      run: |
+        docker push s3-encryption-gateway:${{ github.sha }}
+    - name: Deploy to Kubernetes
+      run: |
+        kubectl set image deployment/s3-encryption-gateway \
+          gateway=s3-encryption-gateway:${{ github.sha }}
 ```
 
-### ArgoCD Integration
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: Application
-metadata:
-  name: s3-encryption-gateway
-spec:
-  project: default
-  source:
-    repoURL: https://github.com/your-org/s3-encryption-gateway
-    path: k8s
-    targetRevision: HEAD
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: production
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-```
+## Quick Start Deployment
 
-## Development and Testing
-
-### Local Development
-```yaml
-# docker-compose.yml for local development
-version: '3.8'
-services:
-  gateway:
-    build: .
-    ports:
-      - "8080:8080"
-    environment:
-      - ENCRYPTION_PASSWORD=test-password
-      - BACKEND_ENDPOINT=http://minio:9000
-    depends_on:
-      - minio
-
-  minio:
-    image: minio/minio
-    ports:
-      - "9000:9000"
-    environment:
-      - MINIO_ACCESS_KEY=test-key
-      - MINIO_SECRET_KEY=test-secret
-    command: server /data
-```
-
-### Testing Strategy
-- **Unit tests**: Go test suite
-- **Integration tests**: Test against MinIO
-- **E2E tests**: Full deployment tests
-- **Performance tests**: Load testing with k6
-
-## Troubleshooting and Debugging
-
-### Common Issues
-- **Image pull failures**: Check registry credentials
-- **Health check failures**: Verify endpoint responses
-- **Encryption errors**: Check password configuration
-- **Backend connectivity**: Verify network policies and DNS
-
-### Debug Commands
+### Step 1: Create Secrets
 ```bash
-# Check pod status
+kubectl create secret generic s3-encryption-gateway-secrets \
+  --from-literal=backend-access-key=YOUR_KEY \
+  --from-literal=backend-secret-key=YOUR_SECRET \
+  --from-literal=encryption-password=YOUR_PASSWORD
+```
+
+### Step 2: Apply ConfigMap
+```bash
+kubectl apply -f k8s/configmap.yaml
+```
+
+### Step 3: Apply Deployment
+```bash
+kubectl apply -f k8s/deployment.yaml
+```
+
+### Step 4: Apply Phase 4 Resources (Optional but Recommended)
+```bash
+# ServiceMonitor for Prometheus
+kubectl apply -f k8s/servicemonitor.yaml
+
+# Horizontal Pod Autoscaler
+kubectl apply -f k8s/hpa.yaml
+
+# NetworkPolicy for security
+kubectl apply -f k8s/networkpolicy.yaml
+```
+
+### Step 5: Verify Deployment
+```bash
+# Check pods
 kubectl get pods -l app=s3-encryption-gateway
 
-# View logs
+# Check logs
 kubectl logs -f deployment/s3-encryption-gateway
 
-# Debug container
-kubectl exec -it deployment/s3-encryption-gateway -- sh
-
-# Check events
-kubectl describe pod <pod-name>
+# Check metrics endpoint
+kubectl port-forward svc/s3-encryption-gateway 8080:80
+curl http://localhost:8080/metrics
 ```
 
-This deployment strategy provides a production-ready setup for the S3 Encryption Gateway with security, scalability, and observability considerations.
+## Troubleshooting
+
+### Common Issues
+
+**Pod CrashLoopBackOff:**
+- Check logs: `kubectl logs <pod-name>`
+- Verify secrets are correctly configured
+- Check resource limits
+
+**Metrics not appearing:**
+- Verify ServiceMonitor is applied
+- Check Prometheus can reach the service
+- Verify network policies allow monitoring namespace
+
+**Rate limiting too aggressive:**
+- Adjust `RATE_LIMIT_REQUESTS` in ConfigMap
+- Increase `RATE_LIMIT_WINDOW`
+- Check application logs for 429 errors
+
+**TLS certificate errors:**
+- Verify certificate format (PEM)
+- Check file paths are correct
+- Verify secret is mounted correctly
+
+## Security Best Practices
+
+1. **Use external TLS termination** (Ingress) for production
+2. **Enable rate limiting** to prevent abuse
+3. **Apply NetworkPolicy** for network isolation
+4. **Use non-root user** (already configured)
+5. **Rotate secrets regularly**
+6. **Monitor security metrics** in Prometheus
+7. **Perform security audits** (see `PHASE4_SECURITY_AUDIT.md`)
+
+## Performance Tuning
+
+### Resource Optimization
+- Adjust CPU/memory limits based on workload
+- Enable HPA for automatic scaling
+- Monitor metrics for bottlenecks
+
+### Network Optimization
+- Use connection pooling for S3 backend
+- Configure appropriate timeouts
+- Enable compression for large objects
+
+### Encryption Optimization
+- Hardware acceleration (AES-NI) is automatically used when available
+- Monitor encryption metrics for performance
+- Consider compression for compressible data
+
+## Additional Resources
+
+- **Architecture**: See `ARCHITECTURE.md`
+- **Development**: See `DEVELOPMENT_GUIDE.md`
+- **Security Audit**: See `PHASE4_SECURITY_AUDIT.md`
+- **API Implementation**: See `S3_API_IMPLEMENTATION.md`

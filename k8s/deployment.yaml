@@ -52,6 +52,43 @@ spec:
             secretKeyRef:
               name: s3-encryption-gateway-secrets
               key: encryption-password
+        # Phase 4: Rate limiting configuration
+        - name: RATE_LIMIT_ENABLED
+          valueFrom:
+            configMapKeyRef:
+              name: s3-encryption-gateway-config
+              key: rate-limit-enabled
+        - name: RATE_LIMIT_REQUESTS
+          valueFrom:
+            configMapKeyRef:
+              name: s3-encryption-gateway-config
+              key: rate-limit-requests
+        - name: RATE_LIMIT_WINDOW
+          valueFrom:
+            configMapKeyRef:
+              name: s3-encryption-gateway-config
+              key: rate-limit-window
+        # Phase 4: Server timeout configuration
+        - name: SERVER_READ_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: s3-encryption-gateway-config
+              key: server-read-timeout
+        - name: SERVER_WRITE_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: s3-encryption-gateway-config
+              key: server-write-timeout
+        - name: SERVER_IDLE_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: s3-encryption-gateway-config
+              key: server-idle-timeout
+        - name: SERVER_READ_HEADER_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: s3-encryption-gateway-config
+              key: server-read-header-timeout
         livenessProbe:
           httpGet:
             path: /live
