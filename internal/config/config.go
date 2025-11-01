@@ -314,7 +314,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	// Validate TLS configuration
+    // Validate TLS configuration
 	if c.TLS.Enabled {
 		if c.TLS.CertFile == "" {
 			return fmt.Errorf("tls.cert_file is required when TLS is enabled")
@@ -323,6 +323,24 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("tls.key_file is required when TLS is enabled")
 		}
 	}
+
+    // Validate encryption algorithms policy
+    allowed := map[string]bool{
+        "AES256-GCM":         true,
+        "ChaCha20-Poly1305": true,
+    }
+    if alg := strings.TrimSpace(c.Encryption.PreferredAlgorithm); alg != "" {
+        if !allowed[alg] {
+            return fmt.Errorf("invalid encryption.preferred_algorithm: %s", alg)
+        }
+    }
+    if len(c.Encryption.SupportedAlgorithms) > 0 {
+        for _, alg := range c.Encryption.SupportedAlgorithms {
+            if !allowed[strings.TrimSpace(alg)] {
+                return fmt.Errorf("invalid entry in encryption.supported_algorithms: %s", alg)
+            }
+        }
+    }
 
 	return nil
 }

@@ -56,6 +56,8 @@ type engine struct {
 	compressionEngine CompressionEngine
 	preferredAlgorithm string
 	supportedAlgorithms []string
+    // keyResolver resolves a password by key version for decryption of older objects
+    keyResolver       func(version int) (string, bool)
 }
 
 // NewEngine creates a new encryption engine with the given password.
@@ -107,6 +109,27 @@ func NewEngineWithOptions(password string, compressionEngine CompressionEngine, 
 		preferredAlgorithm: preferredAlgorithm,
 		supportedAlgorithms: supportedAlgorithms,
 	}, nil
+}
+
+// NewEngineWithResolver creates a new encryption engine with a key resolver for rotation support.
+func NewEngineWithResolver(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool)) (EncryptionEngine, error) {
+    eng, err := NewEngineWithOptions(password, compressionEngine, preferredAlgorithm, supportedAlgorithms)
+    if err != nil {
+        return nil, err
+    }
+    // Set resolver on concrete type
+    if e, ok := eng.(*engine); ok {
+        e.keyResolver = resolver
+    }
+    return eng, nil
+}
+
+// SetKeyResolver sets a key resolver on an existing engine instance.
+// This allows decryption using older key versions without reconstructing the engine.
+func SetKeyResolver(enc EncryptionEngine, resolver func(version int) (string, bool)) {
+    if e, ok := enc.(*engine); ok {
+        e.keyResolver = resolver
+    }
 }
 
 // deriveKey derives an AES-256 key from the password using PBKDF2.
@@ -254,8 +277,14 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		return nil, nil, fmt.Errorf("failed to read data for encryption: %w", err)
 	}
 
-	// Encrypt the data using GCM
-	ciphertext := gcm.Seal(nil, nonce, dataToEncrypt, nil)
+    // Build AAD to bind critical metadata
+    aad := buildAAD(algorithm, salt, nonce, map[string]string{
+        "Content-Type": contentType,
+        MetaKeyVersion:  metadata[MetaKeyVersion],
+        MetaOriginalSize: fmt.Sprintf("%d", originalSize),
+    })
+    // Encrypt the data using AEAD with AAD
+    ciphertext := gcm.Seal(nil, nonce, dataToEncrypt, aad)
 
 	// Create encrypted reader from ciphertext
 	encryptedReader := bytes.NewReader(ciphertext)
@@ -276,13 +305,17 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		}
 	}
 
-	// Add encryption markers
+    // Add encryption markers
 	encMetadata[MetaEncrypted] = "true"
 	encMetadata[MetaAlgorithm] = algorithm
 	encMetadata[MetaKeySalt] = encodeBase64(salt)
 	encMetadata[MetaIV] = encodeBase64(nonce)
 	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
 	encMetadata[MetaOriginalETag] = originalETag
+    // Preserve key version if provided by caller
+    if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
+        encMetadata[MetaKeyVersion] = kv
+    }
 
 	// Note: Authentication tag is included in the ciphertext by GCM.Seal
 
@@ -348,11 +381,62 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 	gcm := aeadCipher.(cipher.AEAD) // For backward compatibility
 
-	// Create decrypted reader
-	decryptedReader, err := newDecryptReader(reader, gcm, iv)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create decrypt reader: %w", err)
-	}
+    // Read all encrypted data (current implementation is buffered)
+    ciphertext, err := io.ReadAll(reader)
+    if err != nil {
+        return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
+    }
+
+    // Build AAD from metadata
+    aad := buildAAD(algorithm, salt, iv, map[string]string{
+        MetaKeyVersion:  metadata[MetaKeyVersion],
+        MetaOriginalSize: metadata[MetaOriginalSize],
+        "Content-Type":  metadata["Content-Type"],
+    })
+
+    // Attempt decrypt with current key and AAD
+    plaintext, openErr := gcm.Open(nil, iv, ciphertext, aad)
+    if openErr != nil {
+        // Backward compatibility: try without AAD
+        if pt, err2 := gcm.Open(nil, iv, ciphertext, nil); err2 == nil {
+            plaintext = pt
+            openErr = nil
+        }
+    }
+
+    // If still failing and keyResolver available with key version, try resolved password
+    if openErr != nil && e.keyResolver != nil {
+        if kvStr, ok := metadata[MetaKeyVersion]; ok && kvStr != "" {
+            // parse version
+            var ver int
+            if _, perr := fmt.Sscanf(kvStr, "%d", &ver); perr == nil {
+                if altPass, ok := e.keyResolver(ver); ok {
+                    // derive alt key
+                    altKey := pbkdf2.Key([]byte(altPass), salt, pbkdf2Iterations, keySize, sha256.New)
+                    defer zeroBytes(altKey)
+                    // create cipher
+                    altCipher, cerr := createAEADCipher(algorithm, altKey)
+                    if cerr == nil {
+                        altGCM := altCipher.(cipher.AEAD)
+                        if pt, err3 := altGCM.Open(nil, iv, ciphertext, aad); err3 == nil {
+                            plaintext = pt
+                            openErr = nil
+                        } else if pt2, err4 := altGCM.Open(nil, iv, ciphertext, nil); err4 == nil {
+                            plaintext = pt2
+                            openErr = nil
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if openErr != nil {
+        return nil, nil, fmt.Errorf("failed to decrypt data: %w", openErr)
+    }
+
+    // Create decrypted reader from plaintext
+    decryptedReader := bytes.NewReader(plaintext)
 
 	// Read decrypted data (may be compressed)
 	decryptedData, err := io.ReadAll(decryptedReader)
@@ -427,6 +511,33 @@ func isCompressionMetadata(key string) bool {
 		key == MetaCompressionEnabled ||
 		key == MetaCompressionAlgorithm ||
 		key == MetaCompressionOriginalSize
+}
+
+// buildAAD constructs additional authenticated data from stable metadata fields.
+// Fields included: algorithm, salt, nonce, keyVersion (if present), content-type (if present), original-size (if present).
+func buildAAD(algorithm string, salt, nonce []byte, meta map[string]string) []byte {
+    // Use a simple canonical concatenation with separators.
+    // Note: All values must be stable between encrypt/decrypt.
+    var b bytes.Buffer
+    b.WriteString("alg:")
+    b.WriteString(algorithm)
+    b.WriteString("|salt:")
+    b.WriteString(encodeBase64(salt))
+    b.WriteString("|iv:")
+    b.WriteString(encodeBase64(nonce))
+    if kv := meta[MetaKeyVersion]; kv != "" {
+        b.WriteString("|kv:")
+        b.WriteString(kv)
+    }
+    if ct := meta["Content-Type"]; ct != "" {
+        b.WriteString("|ct:")
+        b.WriteString(ct)
+    }
+    if osz := meta[MetaOriginalSize]; osz != "" {
+        b.WriteString("|osz:")
+        b.WriteString(osz)
+    }
+    return b.Bytes()
 }
 
 // zeroBytes overwrites a byte slice with zeros for secure memory cleanup.

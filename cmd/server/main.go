@@ -135,13 +135,34 @@ func main() {
 		"architecture":         hwInfo["architecture"],
 	}).Info("Hardware acceleration status")
 
-	// Initialize encryption engine with compression and algorithm support
-	encryptionEngine, err := crypto.NewEngineWithOptions(
-		activePassword,
-		compressionEngine,
-		cfg.Encryption.PreferredAlgorithm,
-		cfg.Encryption.SupportedAlgorithms,
-	)
+    // Initialize encryption engine with compression, algorithm support, and key resolver (if KMS mode)
+    var encryptionEngine crypto.EncryptionEngine
+    if cfg.Encryption.KeyManager.Enabled {
+        resolver := func(version int) (string, bool) {
+            if keyManager == nil {
+                return "", false
+            }
+            pass, err := keyManager.GetKeyVersion(version)
+            if err != nil || pass == "" {
+                return "", false
+            }
+            return pass, true
+        }
+        encryptionEngine, err = crypto.NewEngineWithResolver(
+            activePassword,
+            compressionEngine,
+            cfg.Encryption.PreferredAlgorithm,
+            cfg.Encryption.SupportedAlgorithms,
+            resolver,
+        )
+    } else {
+        encryptionEngine, err = crypto.NewEngineWithOptions(
+            activePassword,
+            compressionEngine,
+            cfg.Encryption.PreferredAlgorithm,
+            cfg.Encryption.SupportedAlgorithms,
+        )
+    }
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to create encryption engine")
 	}

@@ -45,7 +45,7 @@ func NewHandlerWithFeatures(
 	cache cache.Cache,
 	auditLogger audit.Logger,
 ) *Handler {
-	return &Handler{
+    h := &Handler{
 		s3Client:        s3Client,
 		encryptionEngine: encryptionEngine,
 		logger:          logger,
@@ -53,7 +53,18 @@ func NewHandlerWithFeatures(
 		keyManager:     keyManager,
 		cache:          cache,
 		auditLogger:    auditLogger,
-	}
+    }
+    // If key manager is available, wire a key resolver into the encryption engine for rotation support.
+    if keyManager != nil {
+        crypto.SetKeyResolver(encryptionEngine, func(version int) (string, bool) {
+            pass, err := keyManager.GetKeyVersion(version)
+            if err != nil || pass == "" {
+                return "", false
+            }
+            return pass, true
+        })
+    }
+    return h
 }
 
 // RegisterRoutes registers all API routes.
@@ -342,7 +353,15 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		fmt.Sscanf(contentLength, "%d", &originalBytes)
 	}
 
-	// Encrypt the object
+    // Include key version in metadata if key manager is enabled
+    if h.keyManager != nil {
+        _, keyVersion, _ := h.keyManager.GetActiveKey()
+        if keyVersion > 0 {
+            metadata[crypto.MetaKeyVersion] = fmt.Sprintf("%d", keyVersion)
+        }
+    }
+
+    // Encrypt the object
 	encryptStart := time.Now()
 	encryptedReader, encMetadata, err := h.encryptionEngine.Encrypt(r.Body, metadata)
 	encryptDuration := time.Since(encryptStart)
