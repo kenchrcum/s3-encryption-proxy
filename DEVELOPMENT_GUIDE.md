@@ -1,0 +1,759 @@
+# S3 Encryption Gateway - Development Guide
+
+## Overview
+
+This guide provides comprehensive instructions for developing the S3 Encryption Gateway. Follow this guide to ensure consistent development practices and maintain code quality.
+
+## Development Environment Setup
+
+### Prerequisites
+
+#### Required Software
+- **Go 1.21+**: Core programming language
+- **Docker**: Containerization platform
+- **kubectl**: Kubernetes CLI (for deployment testing)
+- **MinIO**: Local S3-compatible server for testing
+- **git**: Version control
+- **make**: Build automation
+
+#### Installation Commands
+```bash
+# Install Go (Ubuntu/Debian)
+sudo apt update
+sudo apt install golang-go
+
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Install kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+chmod +x kubectl
+sudo mv kubectl /usr/local/bin/
+
+# Install MinIO client
+wget https://dl.min.io/client/mc/release/linux-amd64/mc
+chmod +x mc
+sudo mv mc /usr/local/bin/
+```
+
+### Project Setup
+
+#### Clone and Initialize
+```bash
+git clone https://github.com/your-org/s3-encryption-gateway.git
+cd s3-encryption-gateway
+
+# Initialize Go modules
+go mod tidy
+
+# Create local development configuration
+cp config.example.yaml config.local.yaml
+```
+
+#### Development Tools Setup
+```bash
+# Install development tools
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+go install github.com/cosmtrek/air@latest  # Live reload
+go install github.com/go-delve/delve/cmd/dlv@latest  # Debugger
+go install github.com/securecodewarrior/govulncheck@latest  # Vulnerability scanner
+```
+
+## Project Structure
+
+### Directory Layout
+```
+s3-encryption-gateway/
+├── cmd/                    # Application entrypoints
+│   └── server/            # Main server application
+├── internal/              # Private application code
+│   ├── api/              # HTTP handlers and routing
+│   ├── config/           # Configuration management
+│   ├── crypto/           # Encryption/decryption logic
+│   ├── s3/               # S3 client and operations
+│   ├── middleware/       # HTTP middleware
+│   └── metrics/          # Monitoring and metrics
+├── pkg/                  # Public packages (if any)
+├── test/                 # Test utilities and data
+├── docs/                 # Documentation
+├── k8s/                  # Kubernetes manifests
+├── docker/               # Docker-related files
+├── .github/              # GitHub Actions and templates
+├── go.mod
+├── go.sum
+├── Makefile
+├── README.md
+└── DEVELOPMENT_GUIDE.md
+```
+
+### Package Organization Principles
+
+#### Internal Packages
+- **api**: HTTP request/response handling, routing
+- **config**: Configuration parsing, validation, environment handling
+- **crypto**: All encryption/decryption operations
+- **s3**: Backend S3 client implementations, request parsing
+- **middleware**: HTTP middleware for logging, auth, etc.
+- **metrics**: Prometheus metrics, health checks
+
+#### Code Organization Rules
+- **Single responsibility**: Each package has one clear purpose
+- **Dependency direction**: Lower-level packages don't import higher-level ones
+- **Interface segregation**: Define interfaces for external dependencies
+- **Error handling**: Centralized error types and handling
+
+## Coding Standards
+
+### Go Code Style
+
+#### Formatting and Style
+```go
+// Use gofmt and goimports
+go fmt ./...
+goimports -w .
+
+// Follow standard Go naming conventions
+type S3Request struct {  // PascalCase for exported types
+    bucket string       // camelCase for unexported fields
+    Key    string       // PascalCase for exported fields
+}
+
+// Use meaningful variable names
+var encryptionKey []byte  // Good
+var k []byte             // Bad
+
+// Group imports: standard, third-party, internal
+import (
+    "context"
+    "io"
+
+    "github.com/aws/aws-sdk-go/aws"
+    "github.com/prometheus/client_golang/prometheus"
+
+    "github.com/your-org/s3-gateway/internal/config"
+)
+```
+
+#### Error Handling
+```go
+// Use custom error types
+type EncryptionError struct {
+    Op   string
+    Err  error
+    Meta map[string]interface{}
+}
+
+func (e *EncryptionError) Error() string {
+    return fmt.Sprintf("encryption %s failed: %v", e.Op, e.Err)
+}
+
+// Wrap errors with context
+return fmt.Errorf("failed to encrypt object %s/%s: %w", bucket, key, err)
+
+// Use error handling patterns
+func processObject(ctx context.Context, bucket, key string) error {
+    data, err := s3Client.GetObject(ctx, bucket, key)
+    if err != nil {
+        return fmt.Errorf("failed to get object: %w", err)
+    }
+    defer data.Body.Close()
+
+    encrypted, err := crypto.Encrypt(data.Body)
+    if err != nil {
+        return fmt.Errorf("failed to encrypt object: %w", err)
+    }
+
+    return s3Client.PutObject(ctx, bucket, key, encrypted)
+}
+```
+
+#### Concurrency Patterns
+```go
+// Use context for cancellation
+func (s *Server) handleRequest(ctx context.Context, req *S3Request) error {
+    // Check for cancellation
+    select {
+    case <-ctx.Done():
+        return ctx.Err()
+    default:
+    }
+
+    // Use goroutines with proper error handling
+    errCh := make(chan error, 1)
+    go func() {
+        defer close(errCh)
+        errCh <- s.processEncryption(ctx, req)
+    }()
+
+    select {
+    case err := <-errCh:
+        return err
+    case <-ctx.Done():
+        return ctx.Err()
+    }
+}
+
+// Use sync.WaitGroup for coordination
+func encryptBatch(ctx context.Context, objects []*S3Object) error {
+    var wg sync.WaitGroup
+    errCh := make(chan error, len(objects))
+
+    for _, obj := range objects {
+        wg.Add(1)
+        go func(o *S3Object) {
+            defer wg.Done()
+            if err := s.encryptObject(ctx, o); err != nil {
+                select {
+                case errCh <- err:
+                default:
+                }
+            }
+        }(obj)
+    }
+
+    wg.Wait()
+    close(errCh)
+
+    // Return first error if any
+    for err := range errCh {
+        return err
+    }
+    return nil
+}
+```
+
+### Testing Standards
+
+#### Unit Test Structure
+```go
+func TestEncryptionEngine_Encrypt(t *testing.T) {
+    tests := []struct {
+        name     string
+        input    []byte
+        password string
+        wantErr  bool
+    }{
+        {
+            name:     "valid encryption",
+            input:    []byte("test data"),
+            password: "test-password",
+            wantErr:  false,
+        },
+        {
+            name:     "empty password",
+            input:    []byte("test data"),
+            password: "",
+            wantErr:  true,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            engine := NewEncryptionEngine(tt.password)
+
+            reader := bytes.NewReader(tt.input)
+            encrypted, err := engine.Encrypt(reader)
+
+            if tt.wantErr {
+                assert.Error(t, err)
+                return
+            }
+
+            assert.NoError(t, err)
+            assert.NotNil(t, encrypted)
+
+            // Test decryption
+            decrypted, err := engine.Decrypt(encrypted)
+            assert.NoError(t, err)
+
+            result, err := io.ReadAll(decrypted)
+            assert.NoError(t, err)
+            assert.Equal(t, tt.input, result)
+        })
+    }
+}
+```
+
+#### Integration Test Setup
+```go
+func TestS3Gateway_EndToEnd(t *testing.T) {
+    if testing.Short() {
+        t.Skip("Skipping integration test in short mode")
+    }
+
+    // Setup MinIO test server
+    minioServer := testutils.StartMinIOServer(t)
+    defer minioServer.Close()
+
+    // Create gateway client
+    gateway := testutils.StartGateway(t, GatewayConfig{
+        BackendURL: minioServer.URL,
+        Password:   "test-password",
+    })
+    defer gateway.Close()
+
+    // Test S3 operations
+    client := s3client.New(gateway.URL)
+
+    // Put encrypted object
+    err := client.PutObject("test-bucket", "test-key", []byte("secret data"))
+    assert.NoError(t, err)
+
+    // Get and verify decryption
+    data, err := client.GetObject("test-bucket", "test-key")
+    assert.NoError(t, err)
+    assert.Equal(t, []byte("secret data"), data)
+}
+```
+
+#### Test Coverage Requirements
+- **Unit tests**: 80%+ coverage for all packages
+- **Integration tests**: Cover all major S3 operations
+- **Performance tests**: Benchmark encryption/decryption speeds
+- **Security tests**: Test encryption correctness and error handling
+
+## Development Workflow
+
+### Git Workflow
+
+#### Branch Strategy
+```
+main                    # Production-ready code
+├── feature/encrypt-*   # Feature branches
+├── bugfix/*           # Bug fixes
+├── refactor/*         # Code refactoring
+└── release/v*         # Release branches
+```
+
+#### Commit Message Format
+```
+type(scope): description
+
+[optional body]
+
+[optional footer]
+
+Types: feat, fix, docs, style, refactor, test, chore
+Scopes: api, crypto, s3, config, middleware
+```
+
+#### Example Commits
+```
+feat(crypto): implement AES-256-GCM encryption
+
+Add encryption engine with streaming support for large objects.
+Includes key derivation using PBKDF2 and metadata handling.
+
+Closes #123
+
+fix(s3): handle multipart upload encryption
+
+Fix issue where multipart uploads were not properly encrypted
+due to missing part metadata tracking.
+```
+
+### Code Review Process
+
+#### Pull Request Requirements
+- **Description**: Clear description of changes and rationale
+- **Tests**: All tests pass, new tests added for new features
+- **Documentation**: Updated if API or behavior changes
+- **Security**: Security review for crypto-related changes
+- **Performance**: No significant performance regressions
+
+#### Review Checklist
+- [ ] Code compiles and tests pass
+- [ ] No linting errors
+- [ ] Security vulnerabilities checked
+- [ ] Documentation updated
+- [ ] Performance impact assessed
+- [ ] Error handling appropriate
+- [ ] Logging adequate
+- [ ] Configuration changes backward compatible
+
+### Build and Release Process
+
+#### Local Development Build
+```bash
+# Build for local development
+make build
+
+# Run with live reload
+make dev
+
+# Run tests
+make test
+
+# Run linting
+make lint
+
+# Run security scan
+make security-scan
+```
+
+#### CI/CD Pipeline
+```yaml
+# .github/workflows/ci.yml
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+    - name: Run tests
+      run: make test
+    - name: Run linting
+      run: make lint
+    - name: Security scan
+      run: make security-scan
+    - name: Build
+      run: make build
+```
+
+#### Release Process
+```bash
+# Create release branch
+git checkout -b release/v1.0.0
+
+# Update version
+echo "v1.0.0" > VERSION
+
+# Tag release
+git tag -a v1.0.0 -m "Release version 1.0.0"
+
+# Push release
+git push origin release/v1.0.0
+git push origin v1.0.0
+```
+
+## Implementation Phases
+
+### Phase 1: Core Infrastructure (Week 1-2)
+**Priority**: High
+**Goals**: Basic proxy functionality without encryption
+
+Tasks:
+- [ ] Set up project structure and basic Go modules
+- [ ] Implement basic HTTP server with routing
+- [ ] Create S3 client for backend communication
+- [ ] Add configuration management
+- [ ] Implement health checks and basic middleware
+- [ ] Set up logging and error handling
+- [ ] Create Docker container and basic Kubernetes deployment
+- [ ] Write unit tests for core components
+
+### Phase 2: Encryption Implementation (Week 3-4)
+**Priority**: High
+**Goals**: Add encryption/decryption functionality
+
+Tasks:
+- [ ] Implement AES-256-GCM encryption engine
+- [ ] Add PBKDF2 key derivation
+- [ ] Create streaming encrypt/decrypt readers
+- [ ] Implement metadata handling for encrypted objects
+- [ ] Add encryption detection and conditional processing
+- [ ] Update S3 operations to handle encryption
+- [ ] Add encryption/decryption metrics
+- [ ] Comprehensive encryption testing
+
+### Phase 3: S3 API Compatibility (Week 5-6)
+**Priority**: High
+**Goals**: Full S3 API support
+
+Tasks:
+- [ ] Implement all major S3 operations (GET, PUT, DELETE, LIST, HEAD)
+- [ ] Add multipart upload support with encryption
+- [ ] Handle range requests and object versioning
+- [ ] Implement proper error translation
+- [ ] Add request/response header preservation
+- [ ] Support for different S3 providers (AWS, MinIO, Wasabi)
+- [ ] Integration testing against real S3 services
+
+### Phase 4: Production Readiness (Week 7-8)
+**Priority**: High
+**Goals**: Production deployment and monitoring
+
+Tasks:
+- [ ] Implement comprehensive monitoring and metrics
+- [ ] Add security hardening and TLS support
+- [ ] Performance optimization and benchmarking
+- [ ] Comprehensive documentation
+- [ ] Security audit and penetration testing
+- [ ] Load testing and scalability validation
+- [ ] Production deployment manifests
+
+### Phase 5: Advanced Features (Week 9-10)
+**Priority**: Medium
+**Goals**: Additional functionality and polish
+
+Tasks:
+- [ ] Key rotation and management features
+- [ ] Compression before encryption
+- [ ] Multiple encryption algorithms
+- [ ] Advanced caching and performance features
+- [ ] Additional S3 provider support
+- [ ] Enterprise features (audit logging, compliance)
+
+## Security Development Guidelines
+
+### Cryptographic Security
+- **Never log sensitive data**: Passwords, keys, or encrypted content
+- **Secure key handling**: Zero out keys after use, avoid heap allocation
+- **Input validation**: Validate all cryptographic inputs
+- **Side-channel resistance**: Use constant-time operations where possible
+
+### Code Security
+```go
+// Secure password handling
+func validatePassword(password string) error {
+    if len(password) < 12 {
+        return errors.New("password must be at least 12 characters")
+    }
+    // Additional complexity checks
+    return nil
+}
+
+// Secure memory handling
+func processKey(key []byte) {
+    defer func() {
+        for i := range key {
+            key[i] = 0
+        }
+    }()
+    // Use key...
+}
+```
+
+### Dependency Security
+```bash
+# Regular dependency updates
+go get -u ./...
+go mod tidy
+
+# Vulnerability scanning
+govulncheck ./...
+
+# License checking
+go-licenses check ./...
+```
+
+## Performance Guidelines
+
+### Optimization Principles
+- **Memory efficiency**: Stream processing for large objects
+- **CPU optimization**: Use hardware-accelerated crypto
+- **Concurrent processing**: Leverage goroutines for I/O operations
+- **Resource pooling**: Reuse connections and buffers
+
+### Benchmarking
+```go
+func BenchmarkEncryption(b *testing.B) {
+    engine := NewEncryptionEngine("test-password")
+    data := make([]byte, 1024*1024) // 1MB test data
+
+    b.ResetTimer()
+    for i := 0; i < b.N; i++ {
+        reader := bytes.NewReader(data)
+        encrypted, _ := engine.Encrypt(reader)
+        io.Copy(io.Discard, encrypted)
+    }
+}
+```
+
+### Profiling
+```bash
+# CPU profiling
+go test -cpuprofile=cpu.prof ./...
+
+# Memory profiling
+go test -memprofile=mem.prof ./...
+
+# View profiles
+go tool pprof cpu.prof
+```
+
+## Documentation Requirements
+
+### Code Documentation
+```go
+// Package crypto provides client-side encryption for S3 objects.
+//
+// It implements AES-256-GCM encryption with PBKDF2 key derivation
+// for secure, authenticated encryption of object data.
+package crypto
+
+// EncryptionEngine handles encryption and decryption of data streams.
+//
+// It uses AES-256-GCM for authenticated encryption and supports
+// streaming operations for memory efficiency with large objects.
+type EncryptionEngine struct {
+    // ... fields
+}
+
+// NewEncryptionEngine creates a new encryption engine with the given password.
+//
+// The password is used to derive encryption keys using PBKDF2 with
+// 100,000 iterations and a random salt per object.
+func NewEncryptionEngine(password string) *EncryptionEngine {
+    // ... implementation
+}
+
+// Encrypt encrypts the provided data stream.
+//
+// It returns an encrypted reader that can be used to read the
+// encrypted data. The encryption uses AES-256-GCM with a random
+// IV and authentication tag for each encryption operation.
+func (e *EncryptionEngine) Encrypt(reader io.Reader) (io.Reader, error) {
+    // ... implementation
+}
+```
+
+### API Documentation
+- **README.md**: Project overview and quick start
+- **API.md**: Detailed API documentation
+- **DEPLOYMENT.md**: Deployment and configuration guide
+- **ARCHITECTURE.md**: System architecture and design decisions
+
+### Inline Comments
+- **Exported functions**: Document purpose, parameters, return values
+- **Complex logic**: Explain non-obvious algorithms or decisions
+- **Security considerations**: Document security-relevant code
+- **Error conditions**: Explain when and why errors occur
+
+## Testing Strategy
+
+### Test Categories
+- **Unit tests**: Test individual functions and methods
+- **Integration tests**: Test component interactions
+- **End-to-end tests**: Test complete workflows
+- **Performance tests**: Benchmark and load testing
+- **Security tests**: Test encryption correctness and vulnerabilities
+
+### Test Data Management
+```go
+// testdata/ directory structure
+testdata/
+├── encryption/
+│   ├── valid-key.bin
+│   ├── corrupted-data.bin
+│   └── large-file.bin
+├── s3/
+│   ├── sample-objects/
+│   └── multipart-upload/
+└── config/
+    └── valid-config.yaml
+```
+
+### Mock and Stub Usage
+```go
+// Mock S3 client for testing
+type mockS3Client struct {
+    objects map[string][]byte
+}
+
+func (m *mockS3Client) GetObject(bucket, key string) ([]byte, error) {
+    if data, ok := m.objects[key]; ok {
+        return data, nil
+    }
+    return nil, errors.New("object not found")
+}
+
+// Use in tests
+func TestGateway_GetObject(t *testing.T) {
+    mockClient := &mockS3Client{
+        objects: map[string][]byte{
+            "test-key": []byte("test data"),
+        },
+    }
+
+    gateway := NewGateway(mockClient, "password")
+    data, err := gateway.GetObject("bucket", "test-key")
+    assert.NoError(t, err)
+    assert.Equal(t, []byte("test data"), data)
+}
+```
+
+## Debugging and Troubleshooting
+
+### Logging Best Practices
+```go
+// Structured logging with context
+logger := logrus.WithFields(logrus.Fields{
+    "request_id": requestID,
+    "bucket": bucket,
+    "key": key,
+    "operation": "encrypt",
+})
+
+// Log different levels appropriately
+logger.Debug("Starting encryption process")
+logger.Info("Object encrypted successfully")
+logger.Warn("Using deprecated encryption algorithm")
+logger.Error("Encryption failed", err)
+
+// Include timing information
+start := time.Now()
+defer func() {
+    logger.WithField("duration_ms", time.Since(start).Milliseconds()).Info("Operation completed")
+}()
+```
+
+### Debug Mode
+```go
+// Conditional debug logging
+if debugMode {
+    logger.WithField("data", hex.EncodeToString(data)).Debug("Raw data")
+}
+
+// Debug endpoints for development
+func debugHandler(w http.ResponseWriter, r *http.Request) {
+    if !isDevelopment {
+        http.NotFound(w, r)
+        return
+    }
+
+    // Return debug information
+    info := map[string]interface{}{
+        "version": version,
+        "uptime":  time.Since(startTime),
+        "config":  sanitizedConfig,
+    }
+
+    json.NewEncoder(w).Encode(info)
+}
+```
+
+### Common Debugging Scenarios
+- **Encryption failures**: Check password, key derivation, data corruption
+- **Performance issues**: Profile CPU/memory usage, check for bottlenecks
+- **Network issues**: Verify backend connectivity, check TLS certificates
+- **Memory leaks**: Use memory profiling, check for goroutine leaks
+
+## Contributing Guidelines
+
+### Code Contribution Process
+1. **Fork** the repository
+2. **Create** a feature branch from `main`
+3. **Implement** changes with tests
+4. **Run** full test suite and linting
+5. **Submit** pull request with description
+6. **Address** review feedback
+7. **Merge** after approval
+
+### Code of Conduct
+- Be respectful and inclusive
+- Provide constructive feedback
+- Focus on code quality and security
+- Help newcomers learn and contribute
+
+### Recognition
+- Contributors listed in CONTRIBUTORS.md
+- Major contributors acknowledged in release notes
+- Code review participation valued
+
+This development guide provides a comprehensive foundation for building and maintaining the S3 Encryption Gateway. Follow these guidelines to ensure high-quality, secure, and maintainable code.

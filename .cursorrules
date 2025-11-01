@@ -1,0 +1,233 @@
+# S3 Encryption Gateway - Cursor Rules
+
+## Project Overview
+You are building an S3 Encryption Gateway - a transparent proxy that provides client-side encryption for S3-compatible storage services. The gateway sits between S3 clients and backend storage providers, encrypting/decrypting data transparently while maintaining full S3 API compatibility.
+
+## Core Requirements
+- **Language**: Go 1.21+
+- **Architecture**: HTTP proxy with encryption middleware
+- **Security**: Client-side AES-256-GCM encryption only (no server-side encryption trust)
+- **Deployment**: Docker container for Kubernetes
+- **Compatibility**: Support AWS S3, MinIO, Wasabi, Hetzner, and other S3-compatible providers
+
+## Coding Standards
+
+### Go Conventions
+- Use `gofmt` and `goimports` for formatting
+- Follow standard Go naming: PascalCase for exported, camelCase for unexported
+- Use meaningful variable names, avoid abbreviations
+- Group imports: standard library, blank line, third-party, blank line, internal
+- Document exported functions/types with complete sentences
+- Handle errors explicitly, don't ignore them
+- Use context for cancellation in all operations
+- Prefer streaming for large data operations
+
+### Security First
+- NEVER log passwords, encryption keys, or sensitive data
+- Use constant-time operations for cryptographic comparisons
+- Zero out sensitive data after use
+- Validate all inputs, especially cryptographic parameters
+- Use authenticated encryption (AES-GCM) only
+- Implement proper key derivation (PBKDF2, not simple hashing)
+
+### Error Handling
+```go
+// Good: Wrap errors with context
+return fmt.Errorf("failed to encrypt object %s/%s: %w", bucket, key, err)
+
+// Bad: Lose original error context
+return errors.New("encryption failed")
+```
+
+### Testing Requirements
+- Write unit tests for all exported functions
+- Use table-driven tests for multiple test cases
+- Test error conditions and edge cases
+- Mock external dependencies (S3 clients, etc.)
+- Aim for 80%+ test coverage
+
+## Project Structure
+```
+s3-encryption-gateway/
+├── cmd/server/          # Main application entrypoint
+├── internal/
+│   ├── api/            # HTTP handlers and routing
+│   ├── config/         # Configuration management
+│   ├── crypto/         # Encryption/decryption logic
+│   ├── s3/             # S3 client implementations
+│   ├── middleware/     # HTTP middleware
+│   └── metrics/        # Monitoring and metrics
+├── pkg/                # Public packages (if any)
+├── test/               # Test utilities and fixtures
+├── k8s/                # Kubernetes manifests
+└── docs/               # Documentation
+```
+
+## Implementation Priorities
+
+### Phase 1: Core Infrastructure
+1. HTTP server with basic routing
+2. Configuration management
+3. S3 client for backend communication
+4. Health checks and logging
+
+### Phase 2: Encryption Engine
+1. AES-256-GCM implementation
+2. PBKDF2 key derivation
+3. Streaming encrypt/decrypt
+4. Metadata handling
+
+### Phase 3: S3 API Compatibility
+1. Full S3 operation support
+2. Header/metadata preservation
+3. Error translation
+4. Multiple provider support
+
+### Phase 4: Production Features
+1. Docker/Kubernetes deployment
+2. Monitoring and metrics
+3. Security hardening
+4. Performance optimization
+
+## Key Interfaces
+
+### EncryptionEngine
+```go
+type EncryptionEngine interface {
+    Encrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error)
+    Decrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error)
+    IsEncrypted(metadata map[string]string) bool
+}
+```
+
+### S3Backend
+```go
+type S3Backend interface {
+    PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string) error
+    GetObject(ctx context.Context, bucket, key string) (io.Reader, map[string]string, error)
+    DeleteObject(ctx context.Context, bucket, key string) error
+    ListObjects(ctx context.Context, bucket, prefix string, opts ListOptions) ([]ObjectInfo, error)
+    HeadObject(ctx context.Context, bucket, key string) (map[string]string, error)
+}
+```
+
+## Security Rules
+
+### Cryptographic Operations
+- Use AES-256-GCM for authenticated encryption
+- Generate new random salt/IV for each encryption
+- Store salt/IV with encrypted data
+- Verify authentication tags on decryption
+- Use PBKDF2 with 100,000+ iterations
+
+### Data Handling
+- Stream large objects to avoid memory exhaustion
+- Zero sensitive data after use
+- Don't log decrypted content or keys
+- Validate all cryptographic inputs
+
+### Network Security
+- Use HTTPS for all external communications
+- Validate TLS certificates
+- Implement proper timeouts
+- Rate limiting for API endpoints
+
+## Performance Guidelines
+
+### Memory Management
+- Use streaming for objects > 1MB
+- Buffer pool for small objects
+- Limit concurrent operations
+- Monitor memory usage
+
+### CPU Optimization
+- Leverage AES-NI hardware acceleration
+- Parallel processing where safe
+- Efficient key derivation
+- Profile hot paths
+
+### I/O Optimization
+- Connection pooling for S3 backends
+- Concurrent request handling
+- Proper timeouts and cancellation
+- Efficient buffering strategies
+
+## Development Workflow
+
+### Git Practices
+- Feature branches from main
+- Clear commit messages: `type(scope): description`
+- Pull requests with tests and documentation
+- Code review required for all changes
+
+### Testing Strategy
+- Unit tests for all logic
+- Integration tests for S3 operations
+- End-to-end tests for complete workflows
+- Performance benchmarks
+- Security testing for crypto operations
+
+### Documentation
+- README for setup and usage
+- API documentation for public interfaces
+- Inline comments for complex logic
+- Architecture decisions documented
+
+## Common Patterns
+
+### HTTP Handler
+```go
+func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
+    bucket := mux.Vars(r)["bucket"]
+    key := mux.Vars(r)["key"]
+
+    // Validate input
+    if bucket == "" || key == "" {
+        http.Error(w, "Invalid bucket or key", http.StatusBadRequest)
+        return
+    }
+
+    // Process with encryption
+    err := h.processPutObject(ctx, bucket, key, r.Body, r.Header)
+    if err != nil {
+        h.logger.WithError(err).Error("Failed to put object")
+        http.Error(w, "Internal server error", http.StatusInternalServerError)
+        return
+    }
+
+    w.WriteHeader(http.StatusOK)
+}
+```
+
+### Error Types
+```go
+type EncryptionError struct {
+    Op  string
+    Err error
+}
+
+func (e *EncryptionError) Error() string {
+    return fmt.Sprintf("encryption operation %s failed: %v", e.Op, e.Err)
+}
+
+func (e *EncryptionError) Unwrap() error {
+    return e.Err
+}
+```
+
+### Configuration
+```go
+type Config struct {
+    ListenAddr      string        `yaml:"listen_addr"`
+    EncryptionKey   string        `yaml:"encryption_key" env:"ENCRYPTION_KEY"`
+    Backend         BackendConfig `yaml:"backend"`
+    LogLevel        string        `yaml:"log_level" env:"LOG_LEVEL"`
+}
+
+func LoadConfig(path string) (*Config, error) {
+    // Load from file and environment
+}
+```
+
+Follow these rules to maintain code quality, security, and consistency throughout the S3 Encryption Gateway project.
