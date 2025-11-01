@@ -54,6 +54,8 @@ type EncryptionEngine interface {
 type engine struct {
 	password          string
 	compressionEngine CompressionEngine
+	preferredAlgorithm string
+	supportedAlgorithms []string
 }
 
 // NewEngine creates a new encryption engine with the given password.
@@ -66,12 +68,31 @@ func NewEngine(password string) (EncryptionEngine, error) {
 
 // NewEngineWithCompression creates a new encryption engine with compression support.
 func NewEngineWithCompression(password string, compressionEngine CompressionEngine) (EncryptionEngine, error) {
+	return NewEngineWithOptions(password, compressionEngine, "", nil)
+}
+
+// NewEngineWithOptions creates a new encryption engine with full options.
+func NewEngineWithOptions(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string) (EncryptionEngine, error) {
 	if password == "" {
 		return nil, fmt.Errorf("encryption password cannot be empty")
 	}
 
 	if len(password) < 12 {
 		return nil, fmt.Errorf("encryption password must be at least 12 characters")
+	}
+
+	// Default algorithm configuration
+	if preferredAlgorithm == "" {
+		preferredAlgorithm = AlgorithmAES256GCM
+	}
+	
+	if len(supportedAlgorithms) == 0 {
+		supportedAlgorithms = []string{AlgorithmAES256GCM, AlgorithmChaCha20Poly1305}
+	}
+
+	// Validate preferred algorithm
+	if !isAlgorithmSupported(preferredAlgorithm, supportedAlgorithms) {
+		return nil, fmt.Errorf("preferred algorithm %s is not in supported algorithms list", preferredAlgorithm)
 	}
 
 	// Log hardware acceleration info
@@ -81,8 +102,10 @@ func NewEngineWithCompression(password string, compressionEngine CompressionEngi
 	}
 
 	return &engine{
-		password:          password,
-		compressionEngine: compressionEngine,
+		password:           password,
+		compressionEngine:  compressionEngine,
+		preferredAlgorithm: preferredAlgorithm,
+		supportedAlgorithms: supportedAlgorithms,
 	}, nil
 }
 
@@ -107,6 +130,16 @@ func (e *engine) generateSalt() ([]byte, error) {
 
 // generateNonce generates a cryptographically secure random nonce/IV.
 func (e *engine) generateNonce() ([]byte, error) {
+	return e.generateNonceForAlgorithm(e.preferredAlgorithm)
+}
+
+// generateNonceForAlgorithm generates a nonce with the correct size for the algorithm.
+func (e *engine) generateNonceForAlgorithm(algorithm string) ([]byte, error) {
+	nonceSize, err := getNonceSize(algorithm)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get nonce size for algorithm %s: %w", algorithm, err)
+	}
+	
 	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("failed to generate nonce: %w", err)
@@ -170,13 +203,16 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		// If compression wasn't applied, compMeta will be nil and we continue with original
 	}
 
+	// Determine algorithm to use (preferred algorithm for new encryptions)
+	algorithm := e.preferredAlgorithm
+
 	// Generate salt and nonce for this encryption
 	salt, err := e.generateSalt()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate salt: %w", err)
 	}
 
-	nonce, err := e.generateNonce()
+	nonce, err := e.generateNonceForAlgorithm(algorithm)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
@@ -188,11 +224,29 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 	defer zeroBytes(key)
 
-	// Create GCM cipher
-	gcm, err := e.createCipher(key)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create cipher: %w", err)
+	// Use appropriate key size for algorithm
+	keySize := aesKeySize
+	if algorithm == AlgorithmChaCha20Poly1305 {
+		keySize = chacha20KeySize
 	}
+	if len(key) != keySize {
+		// Trim or pad key to required size
+		adjustedKey := make([]byte, keySize)
+		copy(adjustedKey, key)
+		if len(key) < keySize {
+			// Pad with PBKDF2 of original key (simple approach)
+			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+		}
+		zeroBytes(key)
+		key = adjustedKey
+	}
+
+	// Create cipher using selected algorithm
+	aeadCipher, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cipher for algorithm %s: %w", algorithm, err)
+	}
+	gcm := aeadCipher.(cipher.AEAD) // For backward compatibility with existing code
 
 	// Read data to encrypt (may be compressed)
 	dataToEncrypt, err := io.ReadAll(toEncrypt)
@@ -224,7 +278,7 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// Add encryption markers
 	encMetadata[MetaEncrypted] = "true"
-	encMetadata[MetaAlgorithm] = AlgorithmAES256GCM
+	encMetadata[MetaAlgorithm] = algorithm
 	encMetadata[MetaKeySalt] = encodeBase64(salt)
 	encMetadata[MetaIV] = encodeBase64(nonce)
 	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
@@ -254,6 +308,17 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		return nil, nil, fmt.Errorf("failed to decode IV: %w", err)
 	}
 
+	// Get algorithm from metadata (default to AES-GCM for backward compatibility)
+	algorithm := metadata[MetaAlgorithm]
+	if algorithm == "" {
+		algorithm = AlgorithmAES256GCM
+	}
+
+	// Verify algorithm is supported
+	if !isAlgorithmSupported(algorithm, e.supportedAlgorithms) {
+		return nil, nil, fmt.Errorf("unsupported algorithm %s (not in supported list)", algorithm)
+	}
+
 	// Derive key from password and salt
 	key, err := e.deriveKey(salt)
 	if err != nil {
@@ -261,11 +326,27 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 	defer zeroBytes(key)
 
-	// Create GCM cipher
-	gcm, err := e.createCipher(key)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create cipher: %w", err)
+	// Adjust key size for algorithm
+	keySize := aesKeySize
+	if algorithm == AlgorithmChaCha20Poly1305 {
+		keySize = chacha20KeySize
 	}
+	if len(key) != keySize {
+		adjustedKey := make([]byte, keySize)
+		copy(adjustedKey, key)
+		if len(key) < keySize {
+			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+		}
+		zeroBytes(key)
+		key = adjustedKey
+	}
+
+	// Create cipher using algorithm from metadata
+	aeadCipher, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cipher for algorithm %s: %w", algorithm, err)
+	}
+	gcm := aeadCipher.(cipher.AEAD) // For backward compatibility
 
 	// Create decrypted reader
 	decryptedReader, err := newDecryptReader(reader, gcm, iv)

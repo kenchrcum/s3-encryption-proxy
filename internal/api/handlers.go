@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/kenneth/s3-encryption-gateway/internal/audit"
+	"github.com/kenneth/s3-encryption-gateway/internal/cache"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
@@ -23,15 +25,34 @@ type Handler struct {
 	encryptionEngine crypto.EncryptionEngine
 	logger          *logrus.Logger
 	metrics         *metrics.Metrics
+	keyManager      crypto.KeyManager
+	cache           cache.Cache
+	auditLogger     audit.Logger
 }
 
-// NewHandler creates a new API handler.
+// NewHandler creates a new API handler (backward compatibility).
 func NewHandler(s3Client s3.Client, encryptionEngine crypto.EncryptionEngine, logger *logrus.Logger, m *metrics.Metrics) *Handler {
+	return NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil)
+}
+
+// NewHandlerWithFeatures creates a new API handler with Phase 5 features.
+func NewHandlerWithFeatures(
+	s3Client s3.Client,
+	encryptionEngine crypto.EncryptionEngine,
+	logger *logrus.Logger,
+	m *metrics.Metrics,
+	keyManager crypto.KeyManager,
+	cache cache.Cache,
+	auditLogger audit.Logger,
+) *Handler {
 	return &Handler{
 		s3Client:        s3Client,
 		encryptionEngine: encryptionEngine,
 		logger:          logger,
 		metrics:         m,
+		keyManager:     keyManager,
+		cache:          cache,
+		auditLogger:    auditLogger,
 	}
 }
 
@@ -113,6 +134,23 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		rangeHeader = &rg
 	}
 
+	// Check cache first if enabled and no range request
+	if h.cache != nil && rangeHeader == nil && versionID == nil {
+		if cachedEntry, ok := h.cache.Get(ctx, bucket, key); ok {
+			// Serve from cache
+			for k, v := range cachedEntry.Metadata {
+				w.Header().Set(k, v)
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(cachedEntry.Data)
+			h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusOK, time.Since(start), int64(len(cachedEntry.Data)))
+			if h.auditLogger != nil {
+				h.auditLogger.LogAccess("get", bucket, key, getClientIP(r), r.UserAgent(), getRequestID(r), true, nil, time.Since(start))
+			}
+			return
+		}
+	}
+
 	reader, metadata, err := h.s3Client.GetObject(ctx, bucket, key, versionID, rangeHeader)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
@@ -160,10 +198,42 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		}
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest("GET", r.URL.Path, http.StatusInternalServerError, time.Since(start), 0)
+		if h.auditLogger != nil {
+			alg := metadata[crypto.MetaAlgorithm]
+			if alg == "" {
+				alg = crypto.AlgorithmAES256GCM
+			}
+			h.auditLogger.LogDecrypt(bucket, key, alg, 0, false, err, decryptDuration, nil)
+		}
 		return
 	}
 	decryptedSize := int64(len(decryptedData))
 	h.metrics.RecordEncryptionOperation("decrypt", decryptDuration, decryptedSize)
+
+	// Get algorithm and key version from metadata for audit logging
+	algorithm := metadata[crypto.MetaAlgorithm]
+	if algorithm == "" {
+		algorithm = crypto.AlgorithmAES256GCM
+	}
+	keyVersion := 0 // Default if not available
+	if h.keyManager != nil {
+		_, keyVersion, _ = h.keyManager.GetActiveKey()
+	}
+
+	// Audit logging
+	if h.auditLogger != nil {
+		h.auditLogger.LogDecrypt(bucket, key, algorithm, keyVersion, true, nil, decryptDuration, nil)
+	}
+
+	// Store in cache if enabled and no range/version request
+	if h.cache != nil && rangeHeader == nil && versionID == nil {
+		if err := h.cache.Set(ctx, bucket, key, decryptedData, decMetadata, 0); err != nil {
+			h.logger.WithError(err).WithFields(logrus.Fields{
+				"bucket": bucket,
+				"key":    key,
+			}).Warn("Failed to cache object")
+		}
+	}
 
 	// Apply range request if present (after decryption)
 	outputData := decryptedData
@@ -258,12 +328,29 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	encryptStart := time.Now()
 	encryptedReader, encMetadata, err := h.encryptionEngine.Encrypt(r.Body, metadata)
 	encryptDuration := time.Since(encryptStart)
+	
+	// Get algorithm and key version for audit logging
+	algorithm := encMetadata[crypto.MetaAlgorithm]
+	if algorithm == "" {
+		algorithm = crypto.AlgorithmAES256GCM
+	}
+	keyVersion := 0
+	if h.keyManager != nil {
+		_, keyVersion, _ = h.keyManager.GetActiveKey()
+	}
+
 	if err != nil {
 		h.logger.WithError(err).WithFields(logrus.Fields{
 			"bucket": bucket,
 			"key":    key,
 		}).Error("Failed to encrypt object")
 		h.metrics.RecordEncryptionError("encrypt", "encryption_failed")
+		
+		// Audit logging for failed encryption
+		if h.auditLogger != nil {
+			h.auditLogger.LogEncrypt(bucket, key, algorithm, keyVersion, false, err, encryptDuration, nil)
+		}
+		
 		s3Err := &S3Error{
 			Code:       "InternalError",
 			Message:    "Failed to encrypt object",
@@ -273,6 +360,16 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
+	}
+
+	// Audit logging for successful encryption
+	if h.auditLogger != nil {
+		h.auditLogger.LogEncrypt(bucket, key, algorithm, keyVersion, true, nil, encryptDuration, nil)
+	}
+
+	// Invalidate cache for this object if cache is enabled
+	if h.cache != nil {
+		h.cache.Delete(ctx, bucket, key)
 	}
 
 	// Record encryption metrics (read encrypted data size for accurate bytes)
@@ -344,7 +441,20 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 		}).Error("Failed to delete object")
 		h.metrics.RecordS3Error("DeleteObject", bucket, s3Err.Code)
 		h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		if h.auditLogger != nil {
+			h.auditLogger.LogAccess("delete", bucket, key, getClientIP(r), r.UserAgent(), getRequestID(r), false, err, time.Since(start))
+		}
 		return
+	}
+
+	// Invalidate cache for deleted object
+	if h.cache != nil {
+		h.cache.Delete(ctx, bucket, key)
+	}
+
+	// Audit logging
+	if h.auditLogger != nil {
+		h.auditLogger.LogAccess("delete", bucket, key, getClientIP(r), r.UserAgent(), getRequestID(r), true, nil, time.Since(start))
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -1123,6 +1233,23 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		h.metrics.RecordS3Error("DeleteObjects", bucket, s3Err.Code)
 		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
+	}
+
+	// Invalidate cache for deleted objects
+	if h.cache != nil {
+		for _, del := range deleted {
+			h.cache.Delete(ctx, bucket, del.Key)
+		}
+	}
+
+	// Audit logging for batch delete
+	if h.auditLogger != nil {
+		for _, del := range deleted {
+			h.auditLogger.LogAccess("delete", bucket, del.Key, getClientIP(r), r.UserAgent(), getRequestID(r), true, nil, time.Since(start))
+		}
+		for _, errObj := range errors {
+			h.auditLogger.LogAccess("delete", bucket, errObj.Key, getClientIP(r), r.UserAgent(), getRequestID(r), false, fmt.Errorf("%s: %s", errObj.Code, errObj.Message), time.Since(start))
+		}
 	}
 
 	// Generate response XML

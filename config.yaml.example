@@ -11,6 +11,10 @@ backend:
 
 encryption:
   password: ""     # Set via ENCRYPTION_PASSWORD env var
+  preferred_algorithm: "AES256-GCM"  # Options: AES256-GCM, ChaCha20-Poly1305
+  supported_algorithms:
+    - "AES256-GCM"
+    - "ChaCha20-Poly1305"
 
 compression:
   enabled: false
@@ -38,3 +42,13 @@ rate_limit:
   enabled: false
   limit: 100     # Requests per window
   window: "60s"  # Time window for rate limiting
+
+cache:
+  enabled: false
+  max_size: 104857600    # 100MB in bytes
+  max_items: 1000
+  default_ttl: "5m"       # 5 minutes
+
+audit:
+  enabled: false
+  max_events: 10000       # Maximum events to keep in memory

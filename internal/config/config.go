@@ -15,6 +15,8 @@ type Config struct {
 	Backend     BackendConfig     `yaml:"backend"`
 	Encryption  EncryptionConfig  `yaml:"encryption"`
 	Compression CompressionConfig `yaml:"compression"`
+	Cache       CacheConfig       `yaml:"cache"`
+	Audit       AuditConfig       `yaml:"audit"`
 	TLS         TLSConfig         `yaml:"tls"`
 	Server      ServerConfig      `yaml:"server"`
 	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
@@ -70,6 +72,20 @@ type RateLimitConfig struct {
 	Window  time.Duration `yaml:"window" env:"RATE_LIMIT_WINDOW"`
 }
 
+// CacheConfig holds cache configuration.
+type CacheConfig struct {
+	Enabled    bool          `yaml:"enabled" env:"CACHE_ENABLED"`
+	MaxSize    int64         `yaml:"max_size" env:"CACHE_MAX_SIZE"`      // Max size in bytes
+	MaxItems   int           `yaml:"max_items" env:"CACHE_MAX_ITEMS"`   // Max number of items
+	DefaultTTL time.Duration `yaml:"default_ttl" env:"CACHE_DEFAULT_TTL"` // Default TTL
+}
+
+// AuditConfig holds audit logging configuration.
+type AuditConfig struct {
+	Enabled   bool `yaml:"enabled" env:"AUDIT_ENABLED"`
+	MaxEvents int  `yaml:"max_events" env:"AUDIT_MAX_EVENTS"` // Max events to keep in memory
+}
+
 // LoadConfig loads configuration from a file and environment variables.
 func LoadConfig(path string) (*Config, error) {
 	config := &Config{
@@ -97,6 +113,16 @@ func LoadConfig(path string) (*Config, error) {
 			Enabled: false,
 			Limit:   100,
 			Window:  60 * time.Second,
+		},
+		Cache: CacheConfig{
+			Enabled:    false,
+			MaxSize:    100 * 1024 * 1024, // 100MB default
+			MaxItems:   1000,
+			DefaultTTL: 5 * time.Minute,
+		},
+		Audit: AuditConfig{
+			Enabled:   false,
+			MaxEvents: 10000,
 		},
 	}
 
@@ -206,6 +232,37 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("RATE_LIMIT_WINDOW"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil {
 			config.RateLimit.Window = d
+		}
+	}
+	// Cache configuration
+	if v := os.Getenv("CACHE_ENABLED"); v != "" {
+		config.Cache.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("CACHE_MAX_SIZE"); v != "" {
+		var maxSize int64
+		if _, err := fmt.Sscanf(v, "%d", &maxSize); err == nil && maxSize > 0 {
+			config.Cache.MaxSize = maxSize
+		}
+	}
+	if v := os.Getenv("CACHE_MAX_ITEMS"); v != "" {
+		var maxItems int
+		if _, err := fmt.Sscanf(v, "%d", &maxItems); err == nil && maxItems > 0 {
+			config.Cache.MaxItems = maxItems
+		}
+	}
+	if v := os.Getenv("CACHE_DEFAULT_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Cache.DefaultTTL = d
+		}
+	}
+	// Audit configuration
+	if v := os.Getenv("AUDIT_ENABLED"); v != "" {
+		config.Audit.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("AUDIT_MAX_EVENTS"); v != "" {
+		var maxEvents int
+		if _, err := fmt.Sscanf(v, "%d", &maxEvents); err == nil && maxEvents > 0 {
+			config.Audit.MaxEvents = maxEvents
 		}
 	}
 }

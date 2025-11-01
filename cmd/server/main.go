@@ -10,6 +10,8 @@ import (
 
 	"github.com/gorilla/mux"
 	"github.com/kenneth/s3-encryption-gateway/internal/api"
+	"github.com/kenneth/s3-encryption-gateway/internal/audit"
+	"github.com/kenneth/s3-encryption-gateway/internal/cache"
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
@@ -66,7 +68,8 @@ func main() {
 		logger.WithError(err).Fatal("Failed to create S3 client")
 	}
 
-	// Load encryption password
+	// Initialize key manager (Phase 5 feature)
+	var keyManager crypto.KeyManager
 	encryptionPassword := cfg.Encryption.Password
 	if encryptionPassword == "" && cfg.Encryption.KeyFile != "" {
 		keyData, err := os.ReadFile(cfg.Encryption.KeyFile)
@@ -79,6 +82,21 @@ func main() {
 	if encryptionPassword == "" {
 		logger.Fatal("Encryption password is required")
 	}
+
+	// Initialize key manager with initial password
+	keyManager, err = crypto.NewKeyManager(encryptionPassword)
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to create key manager")
+	}
+
+	// Get active key from key manager
+	activePassword, keyVersion, err := keyManager.GetActiveKey()
+	if err != nil {
+		logger.WithError(err).Fatal("Failed to get active key")
+	}
+	logger.WithFields(logrus.Fields{
+		"key_version": keyVersion,
+	}).Info("Key manager initialized")
 
 	// Initialize compression engine if enabled
 	var compressionEngine crypto.CompressionEngine
@@ -104,14 +122,50 @@ func main() {
 		"architecture":         hwInfo["architecture"],
 	}).Info("Hardware acceleration status")
 
-	// Initialize encryption engine with compression support
-	encryptionEngine, err := crypto.NewEngineWithCompression(encryptionPassword, compressionEngine)
+	// Initialize encryption engine with compression and algorithm support
+	encryptionEngine, err := crypto.NewEngineWithOptions(
+		activePassword,
+		compressionEngine,
+		cfg.Encryption.PreferredAlgorithm,
+		cfg.Encryption.SupportedAlgorithms,
+	)
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to create encryption engine")
 	}
 
-	// Initialize API handler
-	handler := api.NewHandler(s3Client, encryptionEngine, logger, m)
+	if cfg.Encryption.PreferredAlgorithm != "" {
+		logger.WithFields(logrus.Fields{
+			"preferred_algorithm": cfg.Encryption.PreferredAlgorithm,
+			"supported_algorithms": cfg.Encryption.SupportedAlgorithms,
+		}).Info("Encryption algorithm configuration")
+	}
+
+	// Initialize cache if enabled (Phase 5 feature)
+	var objectCache cache.Cache
+	if cfg.Cache.Enabled {
+		objectCache = cache.NewMemoryCache(
+			cfg.Cache.MaxSize,
+			cfg.Cache.MaxItems,
+			cfg.Cache.DefaultTTL,
+		)
+		logger.WithFields(logrus.Fields{
+			"max_size":     cfg.Cache.MaxSize,
+			"max_items":    cfg.Cache.MaxItems,
+			"default_ttl":  cfg.Cache.DefaultTTL,
+		}).Info("Cache enabled")
+	}
+
+	// Initialize audit logger if enabled (Phase 5 feature)
+	var auditLogger audit.Logger
+	if cfg.Audit.Enabled {
+		auditLogger = audit.NewLogger(cfg.Audit.MaxEvents, nil)
+		logger.WithFields(logrus.Fields{
+			"max_events": cfg.Audit.MaxEvents,
+		}).Info("Audit logging enabled")
+	}
+
+	// Initialize API handler with Phase 5 features
+	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger)
 
 	// Setup router
 	router := mux.NewRouter()
