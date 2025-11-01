@@ -76,8 +76,7 @@ func LoadConfig(path string) (*Config, error) {
 		ListenAddr: ":8080",
 		LogLevel:   "info",
 		Backend: BackendConfig{
-			Endpoint: "https://s3.amazonaws.com",
-			Provider: "aws",
+			Endpoint: "", // Leave empty for AWS default, or set for any S3-compatible endpoint
 			Region:   "us-east-1",
 			UseSSL:   true,
 		},

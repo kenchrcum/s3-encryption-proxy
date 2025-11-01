@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -93,25 +94,16 @@ type s3Client struct {
 }
 
 // NewClient creates a new S3 backend client.
+// It works with any S3-compatible API provider by configuring the endpoint.
 func NewClient(cfg *config.BackendConfig) (Client, error) {
-	// Validate and normalize provider configuration
-	endpoint, region, err := ValidateProviderConfig(cfg.Endpoint, cfg.Provider, cfg.Region)
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate provider config: %w", err)
-	}
-
-	// Validate endpoint URL
-	if err := ValidateEndpoint(endpoint); err != nil {
-		return nil, fmt.Errorf("invalid endpoint: %w", err)
-	}
-
-	// Use normalized region
-	if region != "" {
-		cfg.Region = region
+	// Use default region if not provided
+	region := cfg.Region
+	if region == "" {
+		region = "us-east-1" // Default region for AWS SDK compatibility
 	}
 
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
-		awsconfig.WithRegion(cfg.Region),
+		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
 			cfg.AccessKey,
 			cfg.SecretKey,
@@ -122,19 +114,26 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Configure endpoint and options for all providers
+	// Configure S3 client options
 	s3Options := []func(*s3.Options){}
-	
-	// Set endpoint for non-AWS providers or custom endpoints
-	if endpoint != "" && (cfg.Provider != "aws" || !strings.Contains(endpoint, "amazonaws.com")) {
+
+	// Set custom endpoint if provided (for any S3-compatible provider)
+	if cfg.Endpoint != "" {
+		endpoint := normalizeEndpoint(cfg.Endpoint)
+		
+		// Validate endpoint URL
+		if err := validateEndpoint(endpoint); err != nil {
+			return nil, fmt.Errorf("invalid endpoint: %w", err)
+		}
+		
 		s3Options = append(s3Options, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(endpoint)
 		})
 		awsCfg.BaseEndpoint = aws.String(endpoint)
 	}
 
-	// Configure path-style addressing if required by provider
-	if RequiresPathStyleAddressing(cfg.Provider) {
+	// Use path-style addressing if configured or if UseSSL is false (common for local/MinIO)
+	if cfg.UseSSL == false {
 		s3Options = append(s3Options, func(o *s3.Options) {
 			o.UsePathStyle = true
 		})
@@ -146,6 +145,39 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 		client: client,
 		config: cfg,
 	}, nil
+}
+
+// normalizeEndpoint normalizes the endpoint URL.
+func normalizeEndpoint(endpoint string) string {
+	endpoint = strings.TrimSpace(endpoint)
+	
+	// Add https:// if no scheme provided
+	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
+		endpoint = "https://" + endpoint
+	}
+	
+	// Remove trailing slash
+	endpoint = strings.TrimSuffix(endpoint, "/")
+	
+	return endpoint
+}
+
+// validateEndpoint validates that an endpoint URL is well-formed.
+func validateEndpoint(endpoint string) error {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("invalid endpoint URL: %w", err)
+	}
+	
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("endpoint must use http:// or https:// scheme")
+	}
+	
+	if u.Host == "" {
+		return fmt.Errorf("endpoint must include a hostname")
+	}
+	
+	return nil
 }
 
 // PutObject uploads an object to S3.
