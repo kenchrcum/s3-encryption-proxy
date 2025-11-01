@@ -18,6 +18,14 @@ test:
 	@echo "Running tests..."
 	@go test -v -race -coverprofile=coverage.out ./...
 
+# Run integration tests (requires Docker)
+test-integration:
+	@echo "Running integration tests..."
+	@go test -v ./test/... -run TestS3Gateway
+
+# Run all tests including integration
+test-all: test test-integration
+
 # Run tests with coverage
 test-coverage: test
 	@go tool cover -html=coverage.out -o coverage.html
@@ -82,7 +90,9 @@ coverage:
 help:
 	@echo "Available targets:"
 	@echo "  build          - Build the binary"
-	@echo "  test           - Run tests"
+	@echo "  test           - Run unit tests"
+	@echo "  test-integration - Run integration tests (requires Docker)"
+	@echo "  test-all       - Run all tests including integration"
 	@echo "  test-coverage  - Run tests with HTML coverage report"
 	@echo "  lint           - Run linter"
 	@echo "  fmt            - Format code"
