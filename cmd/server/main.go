@@ -214,6 +214,12 @@ func main() {
 	httpHandler := middleware.RecoveryMiddleware(logger)(router)
 	httpHandler = middleware.LoggingMiddleware(logger)(httpHandler)
 	httpHandler = middleware.SecurityHeadersMiddleware()(httpHandler)
+	
+	// Apply bucket validation middleware if proxied bucket is configured
+	if cfg.ProxiedBucket != "" {
+		httpHandler = middleware.BucketValidationMiddleware(cfg.ProxiedBucket, logger)(httpHandler)
+		logger.WithField("proxied_bucket", cfg.ProxiedBucket).Info("Single bucket proxy mode enabled")
+	}
 
 	// Add rate limiting if enabled
 	if cfg.RateLimit.Enabled {

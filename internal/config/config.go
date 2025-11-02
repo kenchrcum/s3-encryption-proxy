@@ -11,16 +11,17 @@ import (
 
 // Config holds the complete application configuration.
 type Config struct {
-	ListenAddr  string            `yaml:"listen_addr" env:"LISTEN_ADDR"`
-	LogLevel    string            `yaml:"log_level" env:"LOG_LEVEL"`
-	Backend     BackendConfig     `yaml:"backend"`
-	Encryption  EncryptionConfig  `yaml:"encryption"`
-	Compression CompressionConfig `yaml:"compression"`
-	Cache       CacheConfig       `yaml:"cache"`
-	Audit       AuditConfig       `yaml:"audit"`
-	TLS         TLSConfig         `yaml:"tls"`
-	Server      ServerConfig      `yaml:"server"`
-	RateLimit   RateLimitConfig   `yaml:"rate_limit"`
+	ListenAddr   string            `yaml:"listen_addr" env:"LISTEN_ADDR"`
+	LogLevel     string            `yaml:"log_level" env:"LOG_LEVEL"`
+	ProxiedBucket string           `yaml:"proxied_bucket" env:"PROXIED_BUCKET"` // If set, only this bucket will be accessible
+	Backend      BackendConfig   `yaml:"backend"`
+	Encryption   EncryptionConfig  `yaml:"encryption"`
+	Compression  CompressionConfig `yaml:"compression"`
+	Cache        CacheConfig       `yaml:"cache"`
+	Audit        AuditConfig       `yaml:"audit"`
+	TLS          TLSConfig         `yaml:"tls"`
+	Server       ServerConfig      `yaml:"server"`
+	RateLimit    RateLimitConfig   `yaml:"rate_limit"`
 }
 
 // BackendConfig holds S3 backend configuration.
@@ -283,6 +284,10 @@ func loadFromEnv(config *Config) {
 		if _, err := fmt.Sscanf(v, "%d", &maxEvents); err == nil && maxEvents > 0 {
 			config.Audit.MaxEvents = maxEvents
 		}
+	}
+	// Proxied bucket configuration
+	if v := os.Getenv("PROXIED_BUCKET"); v != "" {
+		config.ProxiedBucket = v
 	}
 }
 

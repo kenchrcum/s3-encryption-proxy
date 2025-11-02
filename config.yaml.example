@@ -1,5 +1,7 @@
 listen_addr: ":8080"
 log_level: "info"
+# proxied_bucket: ""  # Optional: If set, the gateway will only proxy requests for this specific bucket
+                      # Set via PROXIED_BUCKET env var
 
 backend:
   endpoint: "https://s3.amazonaws.com"
