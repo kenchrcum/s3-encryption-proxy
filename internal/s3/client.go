@@ -181,11 +181,25 @@ func validateEndpoint(endpoint string) error {
 
 // PutObject uploads an object to S3.
 func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string) error {
+	// Convert metadata - strip x-amz-meta- prefix as AWS SDK v2 adds it automatically
+	// For custom endpoints (Ceph/Hetzner), the SDK should still handle this correctly
+	convertedMeta := convertMetadata(metadata)
+	
+	// Debug: log metadata keys being sent to SDK (for troubleshooting)
+	if len(convertedMeta) > 0 {
+		keys := make([]string, 0, len(convertedMeta))
+		for k := range convertedMeta {
+			keys = append(keys, k)
+		}
+		// Log at debug level (you can enable this if needed)
+		// fmt.Printf("DEBUG: Sending metadata keys to SDK: %v\n", keys)
+	}
+	
 	input := &s3.PutObjectInput{
 		Bucket:   aws.String(bucket),
 		Key:      aws.String(key),
         Body:     reader,
-		Metadata: convertMetadata(metadata),
+		Metadata: convertedMeta,
 	}
     _, err := c.client.PutObject(ctx, input)
 	if err != nil {
@@ -313,20 +327,54 @@ func (c *s3Client) ListObjects(ctx context.Context, bucket, prefix string, opts 
 	return objects, nil
 }
 
-// convertMetadata converts a map[string]string to AWS metadata format.
+// convertMetadata converts our internal metadata map (keys like "x-amz-meta-foo")
+// into the format expected by AWS SDK v2: keys WITHOUT the "x-amz-meta-" prefix.
+// The SDK adds the prefix automatically when sending the request.
+// Passing prefixed keys would produce headers like "x-amz-meta-x-amz-meta-foo",
+// which many S3-compatible providers reject with InvalidArgument.
 func convertMetadata(metadata map[string]string) map[string]string {
-	if metadata == nil {
-		return nil
-	}
-	return metadata
+    if metadata == nil {
+        return nil
+    }
+
+    const prefix = "x-amz-meta-"
+    result := make(map[string]string, len(metadata))
+    for k, v := range metadata {
+        // Strip the x-amz-meta- prefix if present
+        if len(k) > len(prefix) && strings.EqualFold(k[:len(prefix)], prefix) {
+            // Preserve the remainder as-is (providers normalize casing)
+            result[k[len(prefix):]] = v
+            continue
+        }
+        // For any non-standard keys (should be rare), pass through
+        result[k] = v
+    }
+    return result
 }
 
 // extractMetadata extracts metadata from S3 response.
+// AWS SDK v2 returns metadata keys WITHOUT the x-amz-meta- prefix (it strips it automatically).
+// We add the prefix back for consistency with our internal representation.
 func extractMetadata(metadata map[string]string) map[string]string {
 	if metadata == nil {
 		return make(map[string]string)
 	}
-	return metadata
+	
+	result := make(map[string]string, len(metadata))
+	prefix := "x-amz-meta-"
+	
+	for k, v := range metadata {
+		// Add x-amz-meta- prefix if not already present
+		// SDK returns keys without prefix, but we use prefix internally
+		if len(k) > 11 && k[:11] == prefix {
+			// Already has prefix (shouldn't happen from SDK, but be safe)
+			result[k] = v
+		} else {
+			// Add prefix
+			result[prefix+k] = v
+		}
+	}
+	return result
 }
 
 // CreateMultipartUpload initiates a multipart upload.
