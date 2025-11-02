@@ -290,7 +290,7 @@ func (m *MinIOTestServer) createBucket() error {
 	testKey := ".bucket-init"
 	ctx := context.Background()
 	emptyReader := bytes.NewReader([]byte{})
-	err = client.PutObject(ctx, m.Bucket, testKey, emptyReader, nil)
+    err = client.PutObject(ctx, m.Bucket, testKey, emptyReader, nil, nil)
 	if err != nil {
 		// Bucket will be created when first real object is uploaded
 		// This is acceptable for MinIO

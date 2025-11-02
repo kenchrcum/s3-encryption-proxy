@@ -219,7 +219,7 @@ func main() {
 	}
 
 	// Initialize API handler with Phase 5 features
-	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger)
+	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger, cfg)
 
 	// Setup router
 	router := mux.NewRouter()

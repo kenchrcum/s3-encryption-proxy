@@ -18,7 +18,7 @@ import (
 
 // Client is the S3 backend client interface.
 type Client interface {
-	PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string) error
+    PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64) error
 	GetObject(ctx context.Context, bucket, key string, versionID *string, rangeHeader *string) (io.ReadCloser, map[string]string, error)
 	DeleteObject(ctx context.Context, bucket, key string, versionID *string) error
 	HeadObject(ctx context.Context, bucket, key string, versionID *string) (map[string]string, error)
@@ -180,7 +180,7 @@ func validateEndpoint(endpoint string) error {
 }
 
 // PutObject uploads an object to S3.
-func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string) error {
+func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64) error {
 	// Convert metadata - strip x-amz-meta- prefix as AWS SDK v2 adds it automatically
 	// For custom endpoints (Ceph/Hetzner), the SDK should still handle this correctly
 	convertedMeta := convertMetadata(metadata)
@@ -201,6 +201,9 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
         Body:     reader,
 		Metadata: convertedMeta,
 	}
+    if contentLength != nil {
+        input.ContentLength = contentLength
+    }
     _, err := c.client.PutObject(ctx, input)
 	if err != nil {
 		return fmt.Errorf("failed to put object %s/%s: %w", bucket, key, err)

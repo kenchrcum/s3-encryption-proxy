@@ -33,6 +33,8 @@ type BackendConfig struct {
 	Provider  string `yaml:"provider" env:"BACKEND_PROVIDER"` // aws, wasabi, hetzner, minio, digitalocean, backblaze, cloudflare, linode, scaleway, oracle, idrive
 	UseSSL    bool   `yaml:"use_ssl" env:"BACKEND_USE_SSL"`
     UsePathStyle bool `yaml:"use_path_style" env:"BACKEND_USE_PATH_STYLE"`
+    // Compatibility options for backends with metadata restrictions
+    FilterMetadataKeys []string `yaml:"filter_metadata_keys" env:"BACKEND_FILTER_METADATA_KEYS"` // Comma-separated list of metadata keys to filter out
 }
 
 // EncryptionConfig holds encryption-related configuration.
@@ -186,6 +188,13 @@ func loadFromEnv(config *Config) {
 	}
     if v := os.Getenv("BACKEND_USE_PATH_STYLE"); v != "" {
         config.Backend.UsePathStyle = v == "true" || v == "1"
+    }
+    if v := os.Getenv("BACKEND_FILTER_METADATA_KEYS"); v != "" {
+        // Comma-separated list of metadata keys to filter out
+        config.Backend.FilterMetadataKeys = strings.Split(v, ",")
+        for i := range config.Backend.FilterMetadataKeys {
+            config.Backend.FilterMetadataKeys[i] = strings.TrimSpace(config.Backend.FilterMetadataKeys[i])
+        }
     }
 	if v := os.Getenv("ENCRYPTION_PASSWORD"); v != "" {
 		config.Encryption.Password = v

@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/kenneth/s3-encryption-gateway/internal/audit"
 	"github.com/kenneth/s3-encryption-gateway/internal/cache"
+	"github.com/kenneth/s3-encryption-gateway/internal/config"
 	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
@@ -28,11 +29,12 @@ type Handler struct {
 	keyManager      crypto.KeyManager
 	cache           cache.Cache
 	auditLogger     audit.Logger
+	config          *config.Config
 }
 
 // NewHandler creates a new API handler (backward compatibility).
 func NewHandler(s3Client s3.Client, encryptionEngine crypto.EncryptionEngine, logger *logrus.Logger, m *metrics.Metrics) *Handler {
-	return NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil)
+	return NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, nil)
 }
 
 // NewHandlerWithFeatures creates a new API handler with Phase 5 features.
@@ -44,6 +46,7 @@ func NewHandlerWithFeatures(
 	keyManager crypto.KeyManager,
 	cache cache.Cache,
 	auditLogger audit.Logger,
+	config *config.Config,
 ) *Handler {
     h := &Handler{
 		s3Client:        s3Client,
@@ -53,6 +56,7 @@ func NewHandlerWithFeatures(
 		keyManager:     keyManager,
 		cache:          cache,
 		auditLogger:    auditLogger,
+		config:         config,
     }
     // If key manager is available, wire a key resolver into the encryption engine for rotation support.
     if keyManager != nil {
@@ -464,21 +468,30 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Extract metadata from headers (preserve original metadata)
+	// Only include x-amz-meta-* headers - standard headers should NOT be included
+	// as they will cause S3 API errors when sent as metadata
 	metadata := make(map[string]string)
 	for k, v := range r.Header {
 		if len(v) > 0 {
-			// Only include x-amz-meta-* headers and standard headers
-			if len(k) > 11 && k[:11] == "x-amz-meta-" || isStandardMetadata(k) {
+			// Only include x-amz-meta-* headers, not standard headers like Content-Length
+			if len(k) > 11 && k[:11] == "x-amz-meta-" {
 				metadata[k] = v[0]
 			}
 		}
 	}
 
-	// Store original content length if available
+	// Store original content length if available (as x-amz-meta- header)
 	var originalBytes int64
 	if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
 		metadata["x-amz-meta-original-content-length"] = contentLength
 		fmt.Sscanf(contentLength, "%d", &originalBytes)
+	}
+	
+	// Extract Content-Type for encryption engine (for compression decisions)
+	// The encryption engine reads it from metadata, but we'll filter it out before S3
+	// This is a temporary inclusion - filterS3Metadata will remove it
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		metadata["Content-Type"] = contentType
 	}
 
     // Include key version in metadata if key manager is enabled
@@ -563,10 +576,59 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
         "bucket":       bucket,
         "key":          key,
         "metadata_keys": metadataKeys,
-    }).Debug("Metadata keys being sent to S3")
+    }).Debug("Metadata keys before filtering")
 
-    // Upload encrypted object with encryption metadata (streaming)
-    err = h.s3Client.PutObject(ctx, bucket, key, encryptedReader, encMetadata)
+    // Filter out standard HTTP headers from metadata before sending to S3
+    // S3 metadata should only contain x-amz-meta-* headers, not standard headers like Content-Length
+    var filterKeys []string
+    if h.config != nil {
+        filterKeys = h.config.Backend.FilterMetadataKeys
+    }
+    s3Metadata := filterS3Metadata(encMetadata, filterKeys)
+    
+    // Log filtered metadata keys and value sizes for debugging
+    filteredKeys := make([]string, 0, len(s3Metadata))
+    metadataSizes := make(map[string]int)
+    for k, v := range s3Metadata {
+        filteredKeys = append(filteredKeys, k)
+        metadataSizes[k] = len(v)
+        // S3 metadata values are limited to 2KB per AWS docs, but some providers may be stricter
+        if len(v) > 2048 {
+            h.logger.WithFields(logrus.Fields{
+                "bucket":      bucket,
+                "key":         key,
+                "metadata_key": k,
+                "value_size":  len(v),
+            }).Warn("Metadata value exceeds 2KB - may cause S3 rejection")
+        }
+    }
+    h.logger.WithFields(logrus.Fields{
+        "bucket":        bucket,
+        "key":           key,
+        "metadata_keys": filteredKeys,
+        "metadata_sizes": metadataSizes,
+    }).Debug("Metadata keys after filtering (being sent to S3)")
+
+    // Compute encrypted content length for chunked mode if possible to avoid chunked transfer
+    var contentLengthPtr *int64
+    if encMetadata[crypto.MetaChunkedFormat] == "true" && originalBytes > 0 {
+        // Determine chunk size from metadata
+        chunkSize := crypto.DefaultChunkSize
+        if csStr, ok := encMetadata[crypto.MetaChunkSize]; ok && csStr != "" {
+            var cs int
+            if _, err := fmt.Sscanf(csStr, "%d", &cs); err == nil && cs > 0 {
+                chunkSize = cs
+            }
+        }
+        // AEAD tag size for AES-GCM and ChaCha20-Poly1305 is 16 bytes
+        const aeadTagSize = 16
+        chunkCount := (originalBytes + int64(chunkSize) - 1) / int64(chunkSize)
+        encLen := originalBytes + chunkCount*int64(aeadTagSize)
+        contentLengthPtr = &encLen
+    }
+
+    // Upload encrypted object with filtered metadata (streaming)
+    err = h.s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -741,6 +803,13 @@ func isEncryptionMetadata(key string) bool {
 		"x-amz-meta-compression-enabled",
 		"x-amz-meta-compression-algorithm",
 		"x-amz-meta-compression-original-size",
+		// Chunked encryption metadata
+		"x-amz-meta-encryption-chunked",
+		"x-amz-meta-encryption-chunk-size",
+		"x-amz-meta-encryption-chunk-count",
+		"x-amz-meta-encryption-manifest",
+		// Original content length (set by gateway)
+		"x-amz-meta-original-content-length",
 	}
 	for _, ek := range encryptionKeys {
 		if key == ek {
@@ -748,6 +817,39 @@ func isEncryptionMetadata(key string) bool {
 		}
 	}
 	return false
+}
+
+// filterS3Metadata filters out standard HTTP headers from metadata map.
+// S3 metadata should only contain x-amz-meta-* headers, not standard headers
+// like Content-Length, Content-Type, ETag, etc. which some S3 providers reject.
+// Additionally filters out any keys specified in filterKeys for backend compatibility.
+func filterS3Metadata(metadata map[string]string, filterKeys []string) map[string]string {
+	s3Metadata := make(map[string]string)
+
+	// Create a set of keys to filter out for efficient lookup
+	filterSet := make(map[string]bool)
+	if filterKeys != nil {
+		for _, key := range filterKeys {
+			filterSet[key] = true
+		}
+	}
+	for k, v := range metadata {
+		// Only include x-amz-meta-* headers as S3 metadata
+
+		// Skip keys that should be filtered out for backend compatibility
+		if filterSet[k] {
+			continue
+		}
+		if len(k) > 11 && k[:11] == "x-amz-meta-" {
+			s3Metadata[k] = v
+		} else if !isStandardMetadata(k) {
+			// Include non-standard headers that aren't standard HTTP headers
+			// (though typically only x-amz-meta-* should be here)
+			s3Metadata[k] = v
+		}
+		// Explicitly exclude standard headers: Content-Length, Content-Type, ETag, etc.
+	}
+	return s3Metadata
 }
 
 // handleListObjects handles list objects requests.
@@ -905,7 +1007,9 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 	metadata := make(map[string]string)
 	for k, v := range r.Header {
 		if len(v) > 0 {
-			if len(k) > 11 && k[:11] == "x-amz-meta-" || isStandardMetadata(k) {
+			// Only include x-amz-meta-* headers as S3 metadata
+			// Standard headers should not be sent as metadata
+			if len(k) > 11 && k[:11] == "x-amz-meta-" {
 				metadata[k] = v[0]
 			}
 		}
@@ -1350,8 +1454,16 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		return
 	}
 
-    // Upload encrypted copy
-    err = h.s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), encMetadata)
+    // Filter out standard HTTP headers from metadata before sending to S3
+    var filterKeys []string
+    if h.config != nil {
+        filterKeys = h.config.Backend.FilterMetadataKeys
+    }
+    s3Metadata := filterS3Metadata(encMetadata, filterKeys)
+
+    // Upload encrypted copy with filtered metadata and known content length
+    encLen := int64(len(encryptedData))
+    err = h.s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen)
 	if err != nil {
 		s3Err := TranslateError(err, dstBucket, dstKey)
 		s3Err.WriteXML(w)

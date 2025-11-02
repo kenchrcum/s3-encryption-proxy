@@ -23,7 +23,7 @@ func newMockClient() *mockClient {
 	}
 }
 
-func (m *mockClient) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string) error {
+func (m *mockClient) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64) error {
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return err
@@ -83,7 +83,7 @@ func TestMockClient_PutGet(t *testing.T) {
 	data := []byte("test data")
 	metadata := map[string]string{"content-type": "text/plain"}
 
-	err := mock.PutObject(ctx, bucket, key, bytes.NewReader(data), metadata)
+    err := mock.PutObject(ctx, bucket, key, bytes.NewReader(data), metadata, nil)
 	if err != nil {
 		t.Fatalf("PutObject failed: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestMockClient_DeleteObject(t *testing.T) {
 	key := "test-key"
 	data := []byte("test data")
 
-	err := mock.PutObject(ctx, bucket, key, bytes.NewReader(data), nil)
+    err := mock.PutObject(ctx, bucket, key, bytes.NewReader(data), nil, nil)
 	if err != nil {
 		t.Fatalf("PutObject failed: %v", err)
 	}
