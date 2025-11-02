@@ -1,5 +1,9 @@
 # S3 Encryption Gateway
 
+![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/s3-encryption-gateway)](https://artifacthub.io/packages/search?repo=s3-encryption-gateway)
+
 A transparent HTTP proxy that provides client-side encryption for S3-compatible storage services. The gateway sits between S3 clients and backend storage providers, encrypting/decrypting data transparently while maintaining full S3 API compatibility.
 
 ## Features
@@ -12,11 +16,42 @@ A transparent HTTP proxy that provides client-side encryption for S3-compatible 
 
 ## Architecture
 
+```mermaid
+flowchart LR
+  C["S3 Client<br/>(awscli, SDKs)"] --> |S3 API| G[Encryption Gateway]
+  subgraph G["Encryption Gateway"]
+    D["Middleware<br/>(logging, recovery, security, rate limit)"]
+    E["Encryption Engine<br/>AES-256-GCM default<br/>ChaCha20-Poly1305"]
+    K["Key Manager<br/>(optional)"]
+    CMP["Compression<br/>(optional)"]
+    D --> E
+    K -.-> |key resolve| E
+    CMP -.-> |pre/post| E
+  end
+  G --> |S3 API| B[("S3 Backend<br/>AWS, MinIO, Wasabi, Hetzner")]
 ```
-???????????????    ????????????????????    ???????????????
-? S3 Client   ?????? Encryption       ?????? S3 Backend  ?
-? (awscli)    ?    ? Gateway          ?    ? (AWS, etc.) ?
-???????????????    ????????????????????    ???????????????
+
+### Data Flow (PUT/GET)
+
+```mermaid
+sequenceDiagram
+  participant Client
+  participant Gateway
+  participant S3
+  Client->>Gateway: PUT /bucket/key plaintext
+  Gateway->>Gateway: optional compress
+  Gateway->>Gateway: derive key PBKDF2 100k
+  Gateway->>Gateway: encrypt AES-GCM or ChaCha20-Poly1305
+  Gateway->>S3: PUT /bucket/key ciphertext + metadata
+  Note over Gateway,S3: metadata stores salt, iv, alg, original size
+  Client->>Gateway: GET /bucket/key
+  alt Range request
+    Gateway->>S3: GET optimized encrypted byte range chunked
+  else Full object
+    Gateway->>S3: GET object
+  end
+  Gateway->>Gateway: decrypt stream
+  Gateway-->>Client: plaintext
 ```
 
 ## Quick Start
@@ -380,7 +415,7 @@ See `DEVELOPMENT_GUIDE.md` for detailed development guidelines.
 
 ## License
 
-[Specify License]
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Support
 

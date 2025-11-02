@@ -177,9 +177,9 @@ config:
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `replicaCount` | Number of replicas | `2` |
-| `image.repository` | Image repository | `s3-encryption-gateway` |
-| `image.tag` | Image tag | `"latest"` |
+| `replicaCount` | Number of replicas | `1` |
+| `image.repository` | Image repository | `kenchrcum/s3-encryption-gateway` |
+| `image.tag` | Image tag | `"0.2.0"` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
 | `service.type` | Service type | `ClusterIP` |
 | `service.port` | Service port | `80` |
@@ -187,6 +187,20 @@ config:
 | `resources` | Resource requests/limits | See values.yaml |
 | `autoscaling.enabled` | Enable HPA | `false` |
 | `serviceMonitor.enabled` | Enable ServiceMonitor | `false` |
+
+#### Service Account
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `serviceAccount.create` | Create a ServiceAccount | `true` |
+| `serviceAccount.name` | Use existing ServiceAccount name (when create=false uses this; when create=true overrides generated name) | `""` |
+
+#### Network Policy
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `networkPolicy.enabled` | Create a NetworkPolicy | `false` |
+| `networkPolicy.policyTypes` | List of policy types | `[Ingress, Egress]` |
 
 ## Examples
 
@@ -362,5 +376,5 @@ For issues, feature requests, or questions:
 
 ## License
 
-See the main project repository for license information.
+MIT License - see the main project repository [LICENSE](https://github.com/kenneth/s3-encryption-gateway/blob/main/LICENSE) file for details.
 

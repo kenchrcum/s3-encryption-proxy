@@ -33,12 +33,12 @@ The S3 Encryption Gateway must maintain full compatibility with the Amazon S3 AP
   - `POST /{bucket}/{key}?uploads` - Initiate multipart upload
   - `PUT /{bucket}/{key}?partNumber=X&uploadId=Y` - Upload part
   - `POST /{bucket}/{key}?uploadId=Y` - Complete multipart upload
-- **Encryption**: Required for each part
+- **Encryption**: Applied to each uploaded part
 - **Implementation**:
-  - Encrypt each part individually
-  - Maintain part ordering and sizes
-  - Store encryption metadata per part
-  - Note: Current implementation treats multipart as experimental; decryption of completed objects requires a segment manifest not yet finalized.
+  - Encrypt each part before forwarding to backend
+  - Preserve ordering and part ETags
+  - Complete uploads by passing part list to backend
+  - Works seamlessly with chunked encryption mode for true streaming
 
 #### PUT Object Copy
 - **Endpoint**: `PUT /{bucket}/{key}?x-amz-copy-source=...`
@@ -223,9 +223,11 @@ func (e *EncryptionEngine) DecryptStream(reader io.Reader) io.Reader {
 ## Edge Cases and Special Handling
 
 ### Range Requests
-- **GET with Range header**: Requires decryption of entire object first
-- **Implementation**: Buffer and decrypt, then apply range
-- **Performance impact**: Higher memory usage for ranged requests
+- **GET with Range header**: Optimized for chunked encryption format
+- **Implementation**:
+  - If object uses chunked encryption: compute encrypted byte range and fetch only needed chunks from backend; decrypt only those chunks, respond with 206 and correct Content-Range
+  - If legacy (buffered) encryption or plaintext: forward client range to backend or decrypt fully then apply range
+- **Performance impact**: Significantly reduced bandwidth and CPU for chunked format
 
 ### Object Versioning
 - **Versioned objects**: Encrypt/decrypt specific versions
