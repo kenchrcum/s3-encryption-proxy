@@ -30,6 +30,7 @@ type MinIOTestServer struct {
 var (
 	minioServer *MinIOTestServer
 	minioOnce   sync.Once
+	minioError  error
 )
 
 // StartMinIOServer starts a local MinIO server for testing.
@@ -46,19 +47,32 @@ func StartMinIOServer(t *testing.T) *MinIOTestServer {
 
 		// Try Docker first
 		if hasDocker() {
-			server.startDockerMinIO(t)
+			err := server.startDockerMinIO(t)
+			if err != nil {
+				minioError = err
+				return
+			}
 		} else {
 			// Fallback: check if MinIO binary is available
 			if hasMinIOBinary() {
-				server.startBinaryMinIO(t)
+				err := server.startBinaryMinIO(t)
+				if err != nil {
+					minioError = err
+					return
+				}
 			} else {
-				t.Skip("MinIO server not available. Install Docker or MinIO binary for integration tests.")
+				minioError = fmt.Errorf("MinIO server not available. Install Docker or MinIO binary for integration tests")
 				return
 			}
 		}
 
 		minioServer = server
 	})
+
+	if minioError != nil {
+		t.Skipf("MinIO server setup failed: %v", minioError)
+		return nil
+	}
 
 	return minioServer
 }
@@ -82,7 +96,7 @@ func hasMinIOBinary() bool {
 }
 
 // startDockerMinIO starts MinIO using Docker.
-func (m *MinIOTestServer) startDockerMinIO(t *testing.T) {
+func (m *MinIOTestServer) startDockerMinIO(t *testing.T) error {
 	t.Helper()
 
 	// Try docker-compose first (if docker-compose.yml exists)
@@ -123,7 +137,7 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) {
 					downCmd = exec.Command("docker", "compose", "-f", dockerComposePath, "down")
 				}
 				downCmd.Run()
-				t.Fatalf("MinIO failed to start: %v", err)
+				return fmt.Errorf("MinIO failed to start: %w", err)
 			}
 
 			var cleanupCmd *exec.Cmd
@@ -135,7 +149,7 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) {
 			m.cleanup = func() {
 				cleanupCmd.Run()
 			}
-			return
+			return nil
 		}
 	}
 
@@ -156,7 +170,7 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) {
 	)
 
 	if err := cmd.Run(); err != nil {
-		t.Fatalf("Failed to start MinIO Docker container: %v", err)
+		return fmt.Errorf("failed to start MinIO Docker container: %w", err)
 	}
 
 	time.Sleep(3 * time.Second) // Wait for MinIO to start
@@ -164,7 +178,7 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) {
 	// Verify MinIO is running
 	if err := m.waitForMinIO(); err != nil {
 		exec.Command("docker", "stop", containerName).Run()
-		t.Fatalf("MinIO failed to start: %v", err)
+		return fmt.Errorf("MinIO failed to start: %w", err)
 	}
 
 	// Create test bucket
@@ -176,16 +190,17 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) {
 	m.cleanup = func() {
 		exec.Command("docker", "stop", containerName).Run()
 	}
+	return nil
 }
 
 // startBinaryMinIO starts MinIO using local binary.
-func (m *MinIOTestServer) startBinaryMinIO(t *testing.T) {
+func (m *MinIOTestServer) startBinaryMinIO(t *testing.T) error {
 	t.Helper()
 
 	// Create temporary data directory
 	dataDir, err := os.MkdirTemp("", "minio-test-*")
 	if err != nil {
-		t.Fatalf("Failed to create temp directory: %v", err)
+		return fmt.Errorf("failed to create temp directory: %w", err)
 	}
 	m.DataDir = dataDir
 
@@ -205,7 +220,7 @@ func (m *MinIOTestServer) startBinaryMinIO(t *testing.T) {
 
 	if err := cmd.Start(); err != nil {
 		os.RemoveAll(dataDir)
-		t.Fatalf("Failed to start MinIO: %v", err)
+		return fmt.Errorf("failed to start MinIO: %w", err)
 	}
 
 	m.cmd = cmd
@@ -214,13 +229,13 @@ func (m *MinIOTestServer) startBinaryMinIO(t *testing.T) {
 	// Verify MinIO is running
 	if err := m.waitForMinIO(); err != nil {
 		m.Stop()
-		t.Fatalf("MinIO failed to start: %v", err)
+		return fmt.Errorf("MinIO failed to start: %w", err)
 	}
 
 	// Create test bucket
 	if err := m.createBucket(); err != nil {
 		m.Stop()
-		t.Fatalf("Failed to create test bucket: %v", err)
+		return fmt.Errorf("failed to create test bucket: %w", err)
 	}
 
 	m.cleanup = func() {
@@ -229,6 +244,7 @@ func (m *MinIOTestServer) startBinaryMinIO(t *testing.T) {
 		}
 		os.RemoveAll(dataDir)
 	}
+	return nil
 }
 
 // waitForMinIO waits for MinIO to be ready.

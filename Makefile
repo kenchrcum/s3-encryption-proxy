@@ -4,7 +4,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BINARY_NAME := s3-encryption-gateway
-IMAGE_NAME ?= s3-encryption-gateway
+IMAGE_NAME ?= kenchrcum/s3-encryption-gateway
 IMAGE_TAG ?= $(VERSION)
 
 # Build the binary
@@ -59,15 +59,15 @@ docker-build:
 	@docker build \
 		--build-arg VERSION=$(VERSION) \
 		--build-arg COMMIT=$(COMMIT) \
-		-t $(IMAGE_NAME):$(IMAGE_TAG) \
-		-t $(IMAGE_NAME):latest \
-		.
+		-t $(IMAGE_NAME):$(IMAGE_TAG) .
 
 # Push Docker image
 docker-push:
 	@echo "Pushing Docker image..."
 	@docker push $(IMAGE_NAME):$(IMAGE_TAG)
-	@docker push $(IMAGE_NAME):latest
+
+# Run all tests including integration
+docker-all: docker-build docker-push
 
 # Run security scan
 security-scan:
