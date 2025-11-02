@@ -1,0 +1,69 @@
+# Test values file for CI validation
+replicaCount: 1
+
+config:
+  listenAddr:
+    value: ":8080"
+  logLevel:
+    value: "info"
+  backend:
+    endpoint:
+      value: "https://s3.amazonaws.com"
+    region:
+      value: "us-east-1"
+    # Test with useClientCredentials enabled
+    useClientCredentials:
+      value: "true"
+    # accessKey and secretKey not required when useClientCredentials is true
+    accessKey:
+      value: ""
+      valueFrom: {}
+    secretKey:
+      value: ""
+      valueFrom: {}
+    useSSL:
+      value: "true"
+    usePathStyle:
+      value: "false"
+  encryption:
+    password:
+      value: "test-password-123456"
+    preferredAlgorithm:
+      value: "AES256-GCM"
+    supportedAlgorithms:
+      value: "AES256-GCM"
+  compression:
+    enabled:
+      value: "false"
+  server:
+    readTimeout:
+      value: "15s"
+    writeTimeout:
+      value: "15s"
+    idleTimeout:
+      value: "60s"
+    readHeaderTimeout:
+      value: "10s"
+    maxHeaderBytes:
+      value: "1048576"
+  tls:
+    enabled:
+      value: "false"
+  rateLimit:
+    enabled:
+      value: "false"
+  cache:
+    enabled:
+      value: "false"
+  audit:
+    enabled:
+      value: "false"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 64Mi
+

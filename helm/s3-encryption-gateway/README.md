@@ -110,6 +110,13 @@ config:
 | `config.backend.provider` | Provider name (optional) | `""` |
 | `config.backend.useSSL` | Use SSL for backend | `"true"` |
 | `config.backend.usePathStyle` | Use path-style bucket addressing | `"false"` |
+| `config.backend.useClientCredentials` | Use credentials from client requests | `"false"` |
+
+**Note on `useClientCredentials`**: When set to `"true"`, the gateway extracts credentials from client requests (query parameters or Authorization header) instead of using configured backend credentials. In this mode:
+- `config.backend.accessKey` and `config.backend.secretKey` are **NOT required** and will be excluded from the deployment
+- Clients must provide credentials in every request
+- Requests without valid credentials will fail with `AccessDenied`
+- Useful for providers like Hetzner that don't support per-bucket access keys
 
 #### Encryption Configuration
 
@@ -248,6 +255,36 @@ config:
           name: s3-encryption-gateway-secrets
           key: encryption-password
 ```
+
+### Client Credentials Mode
+
+Enable credential passthrough to use client-provided credentials (e.g., for Hetzner):
+
+```yaml
+config:
+  proxiedBucket:
+    value: "my-bucket"  # Still useful to restrict to single bucket
+  backend:
+    endpoint:
+      value: "https://your-bucket.your-region.your-objectstorage.com"
+    region:
+      value: "nbg1"
+    useClientCredentials:
+      value: "true"
+    # accessKey and secretKey are NOT required when useClientCredentials is true
+  encryption:
+    password:
+      valueFrom:
+        secretKeyRef:
+          name: s3-encryption-gateway-secrets
+          key: encryption-password
+```
+
+In this mode, clients must include credentials in requests:
+- Query parameters: `?AWSAccessKeyId=...&AWSSecretAccessKey=...`
+- Or via Authorization header (Signature V4)
+
+Requests without valid credentials will be rejected with `AccessDenied`.
 
 ### Custom Configuration with ConfigMap
 

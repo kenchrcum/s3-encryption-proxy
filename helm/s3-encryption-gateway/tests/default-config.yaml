@@ -1,0 +1,30 @@
+suite: default-config
+description: Test default configuration with backend credentials required
+
+tests:
+  - it: should include BACKEND_ACCESS_KEY and BACKEND_SECRET_KEY when useClientCredentials is disabled
+    template: templates/deployment.yaml
+    set:
+      config.backend.accessKey.value: "test-access-key"
+      config.backend.secretKey.value: "test-secret-key"
+      config.backend.useClientCredentials.value: "false"
+      config.encryption.password.value: "test-password"
+    asserts:
+      - hasDocuments:
+          count: 1
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BACKEND_ACCESS_KEY
+            value: "test-access-key"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BACKEND_SECRET_KEY
+            value: "test-secret-key"
+      - contains:
+          path: spec.template.spec.containers[0].env
+          content:
+            name: BACKEND_USE_CLIENT_CREDENTIALS
+            value: "false"
+

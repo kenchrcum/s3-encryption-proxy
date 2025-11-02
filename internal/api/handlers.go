@@ -22,7 +22,8 @@ import (
 
 // Handler handles HTTP requests for S3 operations.
 type Handler struct {
-	s3Client        s3.Client
+	s3Client        s3.Client // Legacy: kept for backward compatibility
+	clientFactory   *s3.ClientFactory // New: factory for per-request clients
 	encryptionEngine crypto.EncryptionEngine
 	logger          *logrus.Logger
 	metrics         *metrics.Metrics
@@ -57,6 +58,10 @@ func NewHandlerWithFeatures(
 		cache:          cache,
 		auditLogger:    auditLogger,
 		config:         config,
+    }
+    // Create client factory for per-request credential support
+    if config != nil {
+        h.clientFactory = s3.NewClientFactory(&config.Backend)
     }
     // If key manager is available, wire a key resolver into the encryption engine for rotation support.
     if keyManager != nil {
@@ -94,6 +99,86 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	
 	// Batch operations
 	s3Router.HandleFunc("/{bucket}", h.handleDeleteObjects).Methods("POST").Queries("delete", "")
+}
+
+// writeS3ClientError writes an appropriate S3 error response for client initialization failures.
+func (h *Handler) writeS3ClientError(w http.ResponseWriter, r *http.Request, err error, method string, start time.Time) {
+	// When use_client_credentials is enabled and credentials are missing, return AccessDenied
+	if h.config != nil && h.config.Backend.UseClientCredentials {
+		s3Err := &S3Error{
+			Code:       "AccessDenied",
+			Message:    "Missing or invalid credentials in request",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusForbidden,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+	// Otherwise return InternalError
+	s3Err := &S3Error{
+		Code:       "InternalError",
+		Message:    "Failed to initialize S3 client",
+		Resource:   r.URL.Path,
+		HTTPStatus: http.StatusInternalServerError,
+	}
+	s3Err.WriteXML(w)
+	h.metrics.RecordHTTPRequest(method, r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+}
+
+// getS3Client returns the appropriate S3 client for the request.
+// If use_client_credentials is enabled, extracts credentials from request and creates a client.
+// Otherwise, returns the default configured client.
+func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
+	// If credential passthrough is not enabled, use default client
+	if h.config == nil || !h.config.Backend.UseClientCredentials {
+		if h.s3Client != nil {
+			return h.s3Client, nil
+		}
+		if h.clientFactory != nil {
+			return h.clientFactory.GetClient()
+		}
+		return nil, fmt.Errorf("no S3 client available")
+	}
+
+	// When use_client_credentials is enabled, we MUST extract credentials from the request
+	// No fallback to configured credentials - fail if extraction fails
+	clientCreds, err := ExtractCredentials(r)
+	if err != nil {
+		h.logger.WithError(err).Warn("Failed to extract client credentials from request")
+		return nil, fmt.Errorf("failed to extract credentials from request: %w", err)
+	}
+
+	// Both access key and secret key are required
+	if clientCreds.AccessKey == "" {
+		h.logger.Warn("Client credentials incomplete: missing access key")
+		return nil, fmt.Errorf("client credentials incomplete: missing access key")
+	}
+
+	if clientCreds.SecretKey == "" {
+		h.logger.WithFields(logrus.Fields{
+			"access_key": clientCreds.AccessKey,
+		}).Warn("Client credentials incomplete: missing secret key")
+		return nil, fmt.Errorf("client credentials incomplete: missing secret key")
+	}
+
+	// Create client with extracted credentials
+	if h.clientFactory == nil {
+		return nil, fmt.Errorf("client factory not initialized")
+	}
+
+	client, err := h.clientFactory.GetClientWithCredentials(clientCreds.AccessKey, clientCreds.SecretKey)
+	if err != nil {
+		h.logger.WithError(err).WithFields(logrus.Fields{
+			"access_key": clientCreds.AccessKey,
+		}).Error("Failed to create client with extracted credentials")
+		return nil, fmt.Errorf("failed to create S3 client with client credentials: %w", err)
+	}
+
+	h.logger.WithFields(logrus.Fields{
+		"access_key": clientCreds.AccessKey,
+	}).Debug("Using client credentials for backend request")
+	return client, nil
 }
 
 // handleHealth handles health check requests.
@@ -173,9 +258,17 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
     var useRangeOptimization bool
     var plaintextStart, plaintextEnd int64
     
+    // Get S3 client (may use client credentials if enabled)
+    s3Client, err := h.getS3Client(r)
+    if err != nil {
+        h.logger.WithError(err).Error("Failed to get S3 client")
+        h.writeS3ClientError(w, r, err, "GET", start)
+        return
+    }
+
     if rangeHeader != nil {
         // Check if object is encrypted and uses chunked format
-        headMeta, headErr := h.s3Client.HeadObject(ctx, bucket, key, versionID)
+        headMeta, headErr := s3Client.HeadObject(ctx, bucket, key, versionID)
         if headErr == nil && h.encryptionEngine.IsEncrypted(headMeta) {
             // Check if chunked format - if so, we can optimize by fetching only needed chunks
             if crypto.IsChunkedFormat(headMeta) {
@@ -221,7 +314,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
         }
     }
 
-    reader, metadata, err := h.s3Client.GetObject(ctx, bucket, key, versionID, backendRange)
+    reader, metadata, err := s3Client.GetObject(ctx, bucket, key, versionID, backendRange)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -459,11 +552,19 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "PUT", start)
+		return
+	}
+
 	// Check if this is a copy operation
 	copySource := r.Header.Get("x-amz-copy-source")
 	if copySource != "" {
-		// Handle copy operation
-		h.handleCopyObject(w, r, bucket, key, copySource, start)
+		// Handle copy operation (pass s3Client)
+		h.handleCopyObject(w, r, bucket, key, copySource, start, s3Client)
 		return
 	}
 
@@ -628,7 +729,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
     }
 
     // Upload encrypted object with filtered metadata (streaming)
-    err = h.s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr)
+    err = s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -680,13 +781,21 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "DELETE", start)
+		return
+	}
+
 	// Extract version ID if provided
 	var versionID *string
 	if vid := r.URL.Query().Get("versionId"); vid != "" {
 		versionID = &vid
 	}
 
-	err := h.s3Client.DeleteObject(ctx, bucket, key, versionID)
+	err = s3Client.DeleteObject(ctx, bucket, key, versionID)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -734,13 +843,21 @@ func (h *Handler) handleHeadObject(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "HEAD", start)
+		return
+	}
+
 	// Extract version ID if provided
 	var versionID *string
 	if vid := r.URL.Query().Get("versionId"); vid != "" {
 		versionID = &vid
 	}
 
-	metadata, err := h.s3Client.HeadObject(ctx, bucket, key, versionID)
+	metadata, err := s3Client.HeadObject(ctx, bucket, key, versionID)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -867,6 +984,15 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "GET", start)
+		return
+	}
+
 	prefix := r.URL.Query().Get("prefix")
 	delimiter := r.URL.Query().Get("delimiter")
 	marker := r.URL.Query().Get("marker")
@@ -881,7 +1007,7 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 		MaxKeys:   maxKeys,
 	}
 
-	objects, err := h.s3Client.ListObjects(ctx, bucket, prefix, opts)
+	objects, err := s3Client.ListObjects(ctx, bucket, prefix, opts)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, "")
 		s3Err.WriteXML(w)
@@ -1003,6 +1129,14 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 
 	ctx := r.Context()
 
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "POST", start)
+		return
+	}
+
 	// Extract metadata from headers
 	metadata := make(map[string]string)
 	for k, v := range r.Header {
@@ -1015,7 +1149,7 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	uploadID, err := h.s3Client.CreateMultipartUpload(ctx, bucket, key, metadata)
+	uploadID, err := s3Client.CreateMultipartUpload(ctx, bucket, key, metadata)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -1082,6 +1216,14 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "PUT", start)
+		return
+	}
+
 	// Encrypt the part data
 	metadata := make(map[string]string)
 	encryptedReader, _, err := h.encryptionEngine.Encrypt(r.Body, metadata)
@@ -1098,7 +1240,7 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	etag, err := h.s3Client.UploadPart(ctx, bucket, key, uploadID, int32(partNumber), encryptedReader)
+	etag, err := s3Client.UploadPart(ctx, bucket, key, uploadID, int32(partNumber), encryptedReader)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -1138,6 +1280,14 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 
 	ctx := r.Context()
 
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "POST", start)
+		return
+	}
+
 	// Parse multipart upload completion XML
 	type CompleteMultipartUpload struct {
 		XMLName xml.Name `xml:"CompleteMultipartUpload"`
@@ -1170,7 +1320,7 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	etag, err := h.s3Client.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts)
+	etag, err := s3Client.CompleteMultipartUpload(ctx, bucket, key, uploadID, parts)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -1226,7 +1376,15 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 
 	ctx := r.Context()
 
-	err := h.s3Client.AbortMultipartUpload(ctx, bucket, key, uploadID)
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "DELETE", start)
+		return
+	}
+
+	err = s3Client.AbortMultipartUpload(ctx, bucket, key, uploadID)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -1264,7 +1422,15 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	parts, err := h.s3Client.ListParts(ctx, bucket, key, uploadID)
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "GET", start)
+		return
+	}
+
+	parts, err := s3Client.ListParts(ctx, bucket, key, uploadID)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -1320,7 +1486,7 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCopyObject handles PUT Object Copy requests.
-func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBucket, dstKey, copySource string, start time.Time) {
+func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBucket, dstKey, copySource string, start time.Time, s3Client s3.Client) {
 	// Parse copy source: format is "bucket/key" or "bucket/key?versionId=xxx"
 	parts := strings.SplitN(copySource, "/", 2)
 	if len(parts) != 2 {
@@ -1352,7 +1518,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	ctx := r.Context()
 
 	// Get source object (decrypt if encrypted)
-	srcReader, srcMetadata, err := h.s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
+	srcReader, srcMetadata, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
 	if err != nil {
 		s3Err := TranslateError(err, srcBucket, srcKey)
 		s3Err.WriteXML(w)
@@ -1447,7 +1613,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 
     // Upload encrypted copy with filtered metadata and known content length
     encLen := int64(len(encryptedData))
-    err = h.s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen)
+    err = s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen)
 	if err != nil {
 		s3Err := TranslateError(err, dstBucket, dstKey)
 		s3Err.WriteXML(w)
@@ -1463,7 +1629,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	}
 
     // Fetch ETag via HEAD to return accurate ETag
-    headMeta, _ := h.s3Client.HeadObject(ctx, dstBucket, dstKey, nil)
+    headMeta, _ := s3Client.HeadObject(ctx, dstBucket, dstKey, nil)
     etag := headMeta["ETag"]
 
     // Return CopyObjectResult XML
@@ -1502,6 +1668,14 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// Get S3 client (may use client credentials if enabled)
+	s3Client, err := h.getS3Client(r)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get S3 client")
+		h.writeS3ClientError(w, r, err, "POST", start)
+		return
+	}
+
 	// Parse Delete request XML
 	type DeleteRequest struct {
 		XMLName xml.Name `xml:"Delete"`
@@ -1535,7 +1709,7 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	deleted, errors, err := h.s3Client.DeleteObjects(ctx, bucket, identifiers)
+	deleted, errors, err := s3Client.DeleteObjects(ctx, bucket, identifiers)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, "")
 		s3Err.WriteXML(w)

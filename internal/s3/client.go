@@ -92,11 +92,36 @@ type s3Client struct {
 	config *config.BackendConfig
 }
 
-// NewClient creates a new S3 backend client.
-// It works with any S3-compatible API provider by configuring the endpoint.
-func NewClient(cfg *config.BackendConfig) (Client, error) {
+// ClientFactory creates S3 clients, optionally with per-request credentials.
+type ClientFactory struct {
+	baseConfig *config.BackendConfig
+}
+
+// NewClientFactory creates a new client factory from base configuration.
+func NewClientFactory(cfg *config.BackendConfig) *ClientFactory {
+	return &ClientFactory{
+		baseConfig: cfg,
+	}
+}
+
+// GetClient returns a client using the base configured credentials.
+func (f *ClientFactory) GetClient() (Client, error) {
+	return f.GetClientWithCredentials(f.baseConfig.AccessKey, f.baseConfig.SecretKey)
+}
+
+// GetClientWithCredentials creates a new S3 client with specific credentials.
+// Both accessKey and secretKey are required and must not be empty.
+func (f *ClientFactory) GetClientWithCredentials(accessKey, secretKey string) (Client, error) {
+	// Both credentials are required
+	if accessKey == "" {
+		return nil, fmt.Errorf("access key is required")
+	}
+	if secretKey == "" {
+		return nil, fmt.Errorf("secret key is required")
+	}
+
 	// Use default region if not provided
-	region := cfg.Region
+	region := f.baseConfig.Region
 	if region == "" {
 		region = "us-east-1" // Default region for AWS SDK compatibility
 	}
@@ -104,8 +129,8 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(region),
 		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
-			cfg.AccessKey,
-			cfg.SecretKey,
+			accessKey,
+			secretKey,
 			"",
 		)),
 	)
@@ -117,8 +142,8 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 	s3Options := []func(*s3.Options){}
 
 	// Set custom endpoint if provided (for any S3-compatible provider)
-	if cfg.Endpoint != "" {
-		endpoint := normalizeEndpoint(cfg.Endpoint)
+	if f.baseConfig.Endpoint != "" {
+		endpoint := normalizeEndpoint(f.baseConfig.Endpoint)
 		
 		// Validate endpoint URL
 		if err := validateEndpoint(endpoint); err != nil {
@@ -132,7 +157,7 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 	}
 
     // Use path-style addressing if configured or if UseSSL is false (common for local/MinIO)
-    if cfg.UsePathStyle || cfg.UseSSL == false {
+    if f.baseConfig.UsePathStyle || f.baseConfig.UseSSL == false {
 		s3Options = append(s3Options, func(o *s3.Options) {
 			o.UsePathStyle = true
 		})
@@ -142,8 +167,15 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 
 	return &s3Client{
 		client: client,
-		config: cfg,
+		config: f.baseConfig,
 	}, nil
+}
+
+// NewClient creates a new S3 backend client (backward compatibility).
+// It works with any S3-compatible API provider by configuring the endpoint.
+func NewClient(cfg *config.BackendConfig) (Client, error) {
+	factory := NewClientFactory(cfg)
+	return factory.GetClient()
 }
 
 // normalizeEndpoint normalizes the endpoint URL.

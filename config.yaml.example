@@ -13,6 +13,13 @@ backend:
   # filter_metadata_keys: []  # Optional: Comma-separated list of metadata keys to filter out
   #                           # Useful for S3 backends that reject certain metadata keys
   #                           # Set via BACKEND_FILTER_METADATA_KEYS env var
+  # use_client_credentials: false  # Optional: If true, extract and use credentials from client requests
+  #                                 # When enabled, the gateway will use the client's credentials for backend access,
+  #                                 # respecting their access rights. REQUIRES credentials in every request (query params or headers).
+  #                                 # Backend access_key and secret_key are NOT required when this is enabled.
+  #                                 # Supports query parameters (AWSAccessKeyId, AWSSecretAccessKey) and Authorization header.
+  #                                 # If credentials cannot be extracted, the request will fail (no fallback).
+  #                                 # Set via BACKEND_USE_CLIENT_CREDENTIALS env var
 
 encryption:
   password: ""     # Set via ENCRYPTION_PASSWORD env var

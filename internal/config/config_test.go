@@ -129,6 +129,36 @@ func TestConfig_Validate(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "useClientCredentials enabled - backend credentials not required",
+			config: &Config{
+				ListenAddr: ":8080",
+				Backend: BackendConfig{
+					Endpoint:            "http://localhost:9000",
+					UseClientCredentials: true,
+					// AccessKey and SecretKey are empty - this is valid
+				},
+				Encryption: EncryptionConfig{
+					Password: "test-password",
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "useClientCredentials disabled - backend credentials required",
+			config: &Config{
+				ListenAddr: ":8080",
+				Backend: BackendConfig{
+					Endpoint:            "http://localhost:9000",
+					UseClientCredentials: false,
+					// Missing AccessKey and SecretKey
+				},
+				Encryption: EncryptionConfig{
+					Password: "test-password",
+				},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

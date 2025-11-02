@@ -46,11 +46,15 @@ func StartGateway(t *testing.T, cfg *config.Config) *TestGateway {
 	// Initialize metrics
 	m := metrics.NewMetrics()
 
-	// Initialize S3 client
-	s3Client, err := s3.NewClient(&cfg.Backend)
-	if err != nil {
-		listener.Close()
-		t.Fatalf("Failed to create S3 client: %v", err)
+	// Initialize S3 client (only if useClientCredentials is not enabled)
+	var s3Client s3.Client
+	if !cfg.Backend.UseClientCredentials {
+		var err error
+		s3Client, err = s3.NewClient(&cfg.Backend)
+		if err != nil {
+			listener.Close()
+			t.Fatalf("Failed to create S3 client: %v", err)
+		}
 	}
 
 	// Initialize encryption engine
@@ -76,8 +80,8 @@ func StartGateway(t *testing.T, cfg *config.Config) *TestGateway {
 		t.Fatalf("Failed to create encryption engine: %v", err)
 	}
 
-	// Initialize API handler
-	handler := api.NewHandler(s3Client, encryptionEngine, logger, m)
+	// Initialize API handler with config support (required for useClientCredentials)
+	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, cfg)
 
 	// Setup router
 	router := mux.NewRouter()

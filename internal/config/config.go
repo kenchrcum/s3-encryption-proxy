@@ -35,6 +35,9 @@ type BackendConfig struct {
     UsePathStyle bool `yaml:"use_path_style" env:"BACKEND_USE_PATH_STYLE"`
     // Compatibility options for backends with metadata restrictions
     FilterMetadataKeys []string `yaml:"filter_metadata_keys" env:"BACKEND_FILTER_METADATA_KEYS"` // Comma-separated list of metadata keys to filter out
+    // Credential passthrough: if enabled, use credentials from client requests instead of configured credentials
+    // This allows respecting client access rights while still using configured credentials as fallback
+    UseClientCredentials bool `yaml:"use_client_credentials" env:"BACKEND_USE_CLIENT_CREDENTIALS"`
 }
 
 // EncryptionConfig holds encryption-related configuration.
@@ -300,6 +303,10 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("PROXIED_BUCKET"); v != "" {
 		config.ProxiedBucket = v
 	}
+	// Backend credential passthrough configuration
+	if v := os.Getenv("BACKEND_USE_CLIENT_CREDENTIALS"); v != "" {
+		config.Backend.UseClientCredentials = v == "true" || v == "1"
+	}
 }
 
 // Validate validates the configuration and returns an error if invalid.
@@ -310,12 +317,16 @@ func (c *Config) Validate() error {
 
 	// Endpoint is optional - if empty, AWS SDK will use default AWS endpoints
 
-	if c.Backend.AccessKey == "" {
-		return fmt.Errorf("backend.access_key is required")
-	}
+	// Backend credentials: required unless use_client_credentials is enabled
+	// When use_client_credentials is enabled, credentials must come from client requests
+	if !c.Backend.UseClientCredentials {
+		if c.Backend.AccessKey == "" {
+			return fmt.Errorf("backend.access_key is required (or enable backend.use_client_credentials)")
+		}
 
-	if c.Backend.SecretKey == "" {
-		return fmt.Errorf("backend.secret_key is required")
+		if c.Backend.SecretKey == "" {
+			return fmt.Errorf("backend.secret_key is required (or enable backend.use_client_credentials)")
+		}
 	}
 
 	if c.Encryption.Password == "" && c.Encryption.KeyFile == "" {

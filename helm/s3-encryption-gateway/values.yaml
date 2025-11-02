@@ -102,6 +102,20 @@ config:
       value: "true"
     usePathStyle:
       value: "false"
+    useClientCredentials:
+      value: "false"
+      valueFrom: {}
+      # If set to "true", the gateway will extract and use credentials from client requests.
+      # When enabled, backend.accessKey and backend.secretKey are NOT required.
+      # Requests must include credentials via query parameters (AWSAccessKeyId, AWSSecretAccessKey)
+      # or Authorization header. If credentials cannot be extracted, requests will fail.
+      # Example:
+      # value: "true"
+      # Or use valueFrom:
+      # valueFrom:
+      #   configMapKeyRef:
+      #     name: s3-encryption-gateway-config
+      #     key: backend-use-client-credentials
 
   # Encryption configuration
   encryption:
