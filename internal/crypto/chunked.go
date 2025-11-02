@@ -357,12 +357,18 @@ func decodeManifest(encoded string) (*ChunkManifest, error) {
 	return &manifest, nil
 }
 
-// isChunkedFormat checks if metadata indicates chunked encryption format.
-func isChunkedFormat(metadata map[string]string) bool {
+// IsChunkedFormat checks if metadata indicates chunked encryption format.
+// This is exported for use by handlers to optimize range requests.
+func IsChunkedFormat(metadata map[string]string) bool {
 	if metadata == nil {
 		return false
 	}
 	return metadata[MetaChunkedFormat] == "true"
+}
+
+// isChunkedFormat is the internal version (kept for backward compatibility).
+func isChunkedFormat(metadata map[string]string) bool {
+	return IsChunkedFormat(metadata)
 }
 
 // loadManifestFromMetadata loads chunk manifest from object metadata.

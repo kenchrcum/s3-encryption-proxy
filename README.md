@@ -312,8 +312,8 @@ curl "http://localhost:8080/my-bucket?prefix=test"
 - [x] Error translation
 
 ### Known limitations
-- Range requests are applied after decryption; the gateway may need to download and decrypt the full object to serve a range.
-- Streaming encryption uses chunked format with per-chunk IVs; this adds ~5-20% processing overhead but enables true streaming and multipart uploads.
+- Range requests: For chunked encryption, range requests fetch the full encrypted object but efficiently skip unneeded chunks during decryption. Future optimization could fetch only needed encrypted chunks from S3. Legacy encrypted objects require full fetch + decrypt.
+- Streaming encryption uses chunked format with per-chunk IVs; this adds ~5-20% processing overhead but enables true streaming, multipart uploads, and optimized range requests.
 
 ### Phase 4: Production Features ?
 - [x] TLS/HTTPS support

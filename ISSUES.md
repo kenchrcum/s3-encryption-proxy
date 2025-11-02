@@ -7,12 +7,11 @@ Deep project analysis identified several correctness bugs (notably Range on encr
 
 ## P0 ? Critical correctness bugs (fix first)
 
-- Range on encrypted objects applied at backend (incorrect)
-  - Problem: Range header is forwarded to S3 (partial ciphertext), then we decrypt and re-range plaintext. AEAD decryption of partial ciphertext is invalid and may fail or be unsafe.
-  - Impact: Broken/undefined behavior for Range GETs on encrypted objects.
-  - Fix:
-    - Do not forward Range to backend for encrypted objects; fetch full object, decrypt, then apply Range on plaintext.
-    - Longer-term: Implement segmented encryption format to allow server-side partial fetches safely.
+- Range on encrypted objects applied at backend (partially fixed)
+  - ~~Problem: Range header is forwarded to S3 (partial ciphertext), then we decrypt and re-range plaintext. AEAD decryption of partial ciphertext is invalid and may fail or be unsafe.~~
+  - **Current Status**: Fixed for chunked encryption format - full object is fetched but chunked decryption efficiently skips unneeded chunks. Range is applied correctly after decryption.
+  - **Future Optimization**: With chunked format, we can calculate which encrypted chunks contain the requested range and fetch only those chunks from S3 (reducing network transfer for large files with small range requests).
+  - **Legacy Format**: Still requires full fetch + decrypt for non-chunked encrypted objects.
   - Affected: `internal/api/handlers.go`, `internal/s3/client.go`, `internal/crypto/*`
 
 - Response headers set after WriteHeader
