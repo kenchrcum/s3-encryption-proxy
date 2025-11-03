@@ -667,7 +667,7 @@ curl http://localhost:8080/metrics
 4. **Use non-root user** (already configured)
 5. **Rotate secrets regularly**
 6. **Monitor security metrics** in Prometheus
-7. **Perform security audits** (see `PHASE4_SECURITY_AUDIT.md`)
+7. **Perform security audits** (see [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md))
 
 ## Performance Tuning
 
@@ -688,7 +688,7 @@ curl http://localhost:8080/metrics
 
 ## Additional Resources
 
-- **Architecture**: See `ARCHITECTURE.md`
-- **Development**: See `DEVELOPMENT_GUIDE.md`
-- **Security Audit**: See `PHASE4_SECURITY_AUDIT.md`
-- **API Implementation**: See `S3_API_IMPLEMENTATION.md`
+- **Architecture**: See [`ARCHITECTURE.md`](ARCHITECTURE.md)
+- **Development**: See [`DEVELOPMENT_GUIDE.md`](DEVELOPMENT_GUIDE.md)
+- **Security Audit**: See [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md)
+- **API Implementation**: See [`S3_API_IMPLEMENTATION.md`](S3_API_IMPLEMENTATION.md)

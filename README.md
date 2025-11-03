@@ -339,7 +339,7 @@ rate_limit:
 
 ## Contributing
 
-We welcome contributions! Please see `DEVELOPMENT_GUIDE.md` for detailed development guidelines.
+We welcome contributions! Please see [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPMENT_GUIDE.md) for detailed development guidelines.
 
 1. Fork the repository
 2. Create a feature branch
@@ -354,5 +354,5 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ## Support
 
 - **Issues**: Report bugs or request features on [GitHub Issues](https://github.com/your-org/s3-encryption-gateway/issues)
-- **Documentation**: See `DEVELOPMENT_GUIDE.md` for development setup
+- **Documentation**: See [`docs/DEVELOPMENT_GUIDE.md`](docs/DEVELOPMENT_GUIDE.md) for development setup
 - **Helm Chart**: See [Helm chart README](helm/s3-encryption-gateway/README.md) for Kubernetes deployment details

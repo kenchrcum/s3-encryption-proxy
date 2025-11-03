@@ -393,4 +393,4 @@ The gateway will continue to work with objects encrypted with the original passw
 
 - See `internal/crypto/keymanager.go` for the reference implementation
 - See `internal/crypto/keymanager_test.go` for test examples
-- See `PHASE5_ADVANCED_FEATURES.md` for more details on key rotation
+- See [`DEVELOPMENT_NOTES.md`](DEVELOPMENT_NOTES.md) for development notes on key rotation
