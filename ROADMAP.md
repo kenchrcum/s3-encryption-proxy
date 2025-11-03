@@ -2,7 +2,7 @@
 
 This roadmap outlines potential future improvements, grouped by milestones and tracks. Timelines are indicative and may shift based on feedback and priorities.
 
-## Milestone v0.3 (Near-term: 1–2 months)
+## Milestone v0.4 (Near-term: 1–2 months)
 
 - Security/Crypto
   - Range-optimized decryption hardening
@@ -41,7 +41,7 @@ This roadmap outlines potential future improvements, grouped by milestones and t
 - Docs
   - Exported diagrams (SVG) and ADRs for range optimization and multipart decisions.
 
-## Milestone v0.4 (Mid-term: 2–3 months)
+## Milestone v0.5 (Mid-term: 2–3 months)
 
 - Security/Crypto
   - External KMS integrations (AWS KMS, HashiCorp Vault Transit)
@@ -74,7 +74,7 @@ This roadmap outlines potential future improvements, grouped by milestones and t
 - Docs
   - Threat model (STRIDE) and mitigations; security hardening guide.
 
-## Milestone v0.5 (Mid-term: 3–5 months)
+## Milestone v0.6 (Mid-term: 3–5 months)
 
 - Security/Crypto
   - Pluggable KeyManager interface; HSM-friendly adapters.
