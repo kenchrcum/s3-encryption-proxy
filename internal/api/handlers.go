@@ -87,13 +87,14 @@ func (h *Handler) RegisterRoutes(r *mux.Router) {
 	s3Router := r.PathPrefix("/").Subrouter()
 	s3Router.HandleFunc("/{bucket}", h.handleListObjects).Methods("GET")
 	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleGetObject).Methods("GET")
+	// Register multipart-specific PUT route before generic PUT to ensure it matches when query parameters are present
+	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleUploadPart).Methods("PUT").Queries("partNumber", "{partNumber:[0-9]+}", "uploadId", "{uploadId}")
 	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handlePutObject).Methods("PUT")
 	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleDeleteObject).Methods("DELETE")
 	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleHeadObject).Methods("HEAD")
 	
 	// Multipart upload routes
 	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleCreateMultipartUpload).Methods("POST").Queries("uploads", "")
-	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleUploadPart).Methods("PUT").Queries("partNumber", "{partNumber:[0-9]+}", "uploadId", "{uploadId}")
 	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleCompleteMultipartUpload).Methods("POST").Queries("uploadId", "{uploadId}")
 	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleAbortMultipartUpload).Methods("DELETE").Queries("uploadId", "{uploadId}")
 	s3Router.HandleFunc("/{bucket}/{key:.*}", h.handleListParts).Methods("GET").Queries("uploadId", "{uploadId}")
