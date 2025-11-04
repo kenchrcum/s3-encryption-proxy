@@ -14,11 +14,26 @@ spec:
   - {{ . }}
 {{- end }}
   ingress:
+  {{- if .Values.networkPolicy.namespaceIsolation }}
+  # Restrict to same namespace only
+  # When namespaceIsolation is enabled, only pods in the same namespace can access
+  # This combines namespaceSelector and podSelector (AND logic) to restrict to same namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          {{ .Values.networkPolicy.namespaceLabel.key }}: {{ .Release.Namespace }}
+      podSelector: {}
+    ports:
+    - port: {{ .Values.service.targetPort }}
+      protocol: TCP
+  {{- else }}
+  # Allow from any namespace (default behavior)
   - from:
     - podSelector: {}
     ports:
     - port: {{ .Values.service.targetPort }}
       protocol: TCP
+  {{- end }}
   egress:
   - to:
     - {} # allow egress to any (tune as needed)

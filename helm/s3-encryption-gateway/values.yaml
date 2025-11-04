@@ -319,6 +319,19 @@ networkPolicy:
   policyTypes:
     - Ingress
     - Egress
+  # Restrict ingress to same namespace only
+  # When true, only pods in the same namespace can access the gateway
+  # When false, pods from any namespace can access (default behavior)
+  namespaceIsolation: true
+  # Namespace label for isolation (optional)
+  # If not specified, uses kubernetes.io/metadata.name (standard Kubernetes label)
+  # Format: key: value (e.g., "kubernetes.io/metadata.name: my-namespace")
+  # If your namespace doesn't have kubernetes.io/metadata.name, you can:
+  # 1. Label your namespace: kubectl label namespace <name> name=<name>
+  # 2. Or specify a custom label here
+  namespaceLabel:
+    key: "kubernetes.io/metadata.name"
+    # value will be set to Release.Namespace automatically
 
 nodeSelector: {}
 
