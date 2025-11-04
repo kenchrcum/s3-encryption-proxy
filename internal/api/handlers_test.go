@@ -99,7 +99,7 @@ func (m *mockS3Client) CreateMultipartUpload(ctx context.Context, bucket, key st
 	return "upload-id-123", nil
 }
 
-func (m *mockS3Client) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader) (string, error) {
+func (m *mockS3Client) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader, contentLength *int64) (string, error) {
 	return "\"etag-123\"", nil
 }
 

@@ -12,25 +12,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	
+
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
 )
 
 // Client is the S3 backend client interface.
 type Client interface {
-    PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64) error
+	PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64) error
 	GetObject(ctx context.Context, bucket, key string, versionID *string, rangeHeader *string) (io.ReadCloser, map[string]string, error)
 	DeleteObject(ctx context.Context, bucket, key string, versionID *string) error
 	HeadObject(ctx context.Context, bucket, key string, versionID *string) (map[string]string, error)
 	ListObjects(ctx context.Context, bucket, prefix string, opts ListOptions) ([]ObjectInfo, error)
-	
+
 	// Multipart upload operations
 	CreateMultipartUpload(ctx context.Context, bucket, key string, metadata map[string]string) (string, error)
-	UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader) (string, error)
+	UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader, contentLength *int64) (string, error)
 	CompleteMultipartUpload(ctx context.Context, bucket, key, uploadID string, parts []CompletedPart) (string, error)
 	AbortMultipartUpload(ctx context.Context, bucket, key, uploadID string) error
 	ListParts(ctx context.Context, bucket, key, uploadID string) ([]PartInfo, error)
-	
+
 	// Copy and batch operations
 	CopyObject(ctx context.Context, dstBucket, dstKey string, srcBucket, srcKey string, srcVersionID *string, metadata map[string]string) (string, map[string]string, error)
 	DeleteObjects(ctx context.Context, bucket string, keys []ObjectIdentifier) ([]DeletedObject, []ErrorObject, error)
@@ -74,16 +74,16 @@ type ObjectIdentifier struct {
 
 // DeletedObject represents a successfully deleted object.
 type DeletedObject struct {
-	Key       string
-	VersionID string
+	Key          string
+	VersionID    string
 	DeleteMarker bool
 }
 
 // ErrorObject represents an error during batch delete.
 type ErrorObject struct {
-	Key       string
-	Code      string
-	Message   string
+	Key     string
+	Code    string
+	Message string
 }
 
 // s3Client implements the Client interface using AWS SDK v2.
@@ -144,20 +144,20 @@ func (f *ClientFactory) GetClientWithCredentials(accessKey, secretKey string) (C
 	// Set custom endpoint if provided (for any S3-compatible provider)
 	if f.baseConfig.Endpoint != "" {
 		endpoint := normalizeEndpoint(f.baseConfig.Endpoint)
-		
+
 		// Validate endpoint URL
 		if err := validateEndpoint(endpoint); err != nil {
 			return nil, fmt.Errorf("invalid endpoint: %w", err)
 		}
-		
+
 		s3Options = append(s3Options, func(o *s3.Options) {
 			o.BaseEndpoint = aws.String(endpoint)
 		})
 		awsCfg.BaseEndpoint = aws.String(endpoint)
 	}
 
-    // Use path-style addressing if configured or if UseSSL is false (common for local/MinIO)
-    if f.baseConfig.UsePathStyle || f.baseConfig.UseSSL == false {
+	// Use path-style addressing if configured or if UseSSL is false (common for local/MinIO)
+	if f.baseConfig.UsePathStyle || f.baseConfig.UseSSL == false {
 		s3Options = append(s3Options, func(o *s3.Options) {
 			o.UsePathStyle = true
 		})
@@ -181,15 +181,15 @@ func NewClient(cfg *config.BackendConfig) (Client, error) {
 // normalizeEndpoint normalizes the endpoint URL.
 func normalizeEndpoint(endpoint string) string {
 	endpoint = strings.TrimSpace(endpoint)
-	
+
 	// Add https:// if no scheme provided
 	if !strings.HasPrefix(endpoint, "http://") && !strings.HasPrefix(endpoint, "https://") {
 		endpoint = "https://" + endpoint
 	}
-	
+
 	// Remove trailing slash
 	endpoint = strings.TrimSuffix(endpoint, "/")
-	
+
 	return endpoint
 }
 
@@ -199,15 +199,15 @@ func validateEndpoint(endpoint string) error {
 	if err != nil {
 		return fmt.Errorf("invalid endpoint URL: %w", err)
 	}
-	
+
 	if u.Scheme != "http" && u.Scheme != "https" {
 		return fmt.Errorf("endpoint must use http:// or https:// scheme")
 	}
-	
+
 	if u.Host == "" {
 		return fmt.Errorf("endpoint must include a hostname")
 	}
-	
+
 	return nil
 }
 
@@ -216,7 +216,7 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
 	// Convert metadata - strip x-amz-meta- prefix as AWS SDK v2 adds it automatically
 	// For custom endpoints (Ceph/Hetzner), the SDK should still handle this correctly
 	convertedMeta := convertMetadata(metadata)
-	
+
 	// Debug: log metadata keys being sent to SDK (for troubleshooting)
 	if len(convertedMeta) > 0 {
 		keys := make([]string, 0, len(convertedMeta))
@@ -226,17 +226,17 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
 		// Log at debug level (you can enable this if needed)
 		// fmt.Printf("DEBUG: Sending metadata keys to SDK: %v\n", keys)
 	}
-	
+
 	input := &s3.PutObjectInput{
 		Bucket:   aws.String(bucket),
 		Key:      aws.String(key),
-        Body:     reader,
+		Body:     reader,
 		Metadata: convertedMeta,
 	}
-    if contentLength != nil {
-        input.ContentLength = contentLength
-    }
-    _, err := c.client.PutObject(ctx, input)
+	if contentLength != nil {
+		input.ContentLength = contentLength
+	}
+	_, err := c.client.PutObject(ctx, input)
 	if err != nil {
 		return fmt.Errorf("failed to put object %s/%s: %w", bucket, key, err)
 	}
@@ -268,7 +268,7 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 	if result.VersionId != nil {
 		metadata["x-amz-version-id"] = *result.VersionId
 	}
-	
+
 	// Extract standard S3 response headers (same as HeadObject)
 	if result.ContentLength != nil {
 		metadata["Content-Length"] = fmt.Sprintf("%d", *result.ContentLength)
@@ -388,23 +388,23 @@ func (c *s3Client) ListObjects(ctx context.Context, bucket, prefix string, opts 
 // Passing prefixed keys would produce headers like "x-amz-meta-x-amz-meta-foo",
 // which many S3-compatible providers reject with InvalidArgument.
 func convertMetadata(metadata map[string]string) map[string]string {
-    if metadata == nil {
-        return nil
-    }
+	if metadata == nil {
+		return nil
+	}
 
-    const prefix = "x-amz-meta-"
-    result := make(map[string]string, len(metadata))
-    for k, v := range metadata {
-        // Strip the x-amz-meta- prefix if present
-        if len(k) > len(prefix) && strings.EqualFold(k[:len(prefix)], prefix) {
-            // Preserve the remainder as-is (providers normalize casing)
-            result[k[len(prefix):]] = v
-            continue
-        }
-        // For any non-standard keys (should be rare), pass through
-        result[k] = v
-    }
-    return result
+	const prefix = "x-amz-meta-"
+	result := make(map[string]string, len(metadata))
+	for k, v := range metadata {
+		// Strip the x-amz-meta- prefix if present
+		if len(k) > len(prefix) && strings.EqualFold(k[:len(prefix)], prefix) {
+			// Preserve the remainder as-is (providers normalize casing)
+			result[k[len(prefix):]] = v
+			continue
+		}
+		// For any non-standard keys (should be rare), pass through
+		result[k] = v
+	}
+	return result
 }
 
 // extractMetadata extracts metadata from S3 response.
@@ -414,10 +414,10 @@ func extractMetadata(metadata map[string]string) map[string]string {
 	if metadata == nil {
 		return make(map[string]string)
 	}
-	
+
 	result := make(map[string]string, len(metadata))
 	prefix := "x-amz-meta-"
-	
+
 	for k, v := range metadata {
 		// Add x-amz-meta- prefix if not already present
 		// SDK returns keys without prefix, but we use prefix internally
@@ -453,16 +453,20 @@ func (c *s3Client) CreateMultipartUpload(ctx context.Context, bucket, key string
 }
 
 // UploadPart uploads a part of a multipart upload.
-func (c *s3Client) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader) (string, error) {
+func (c *s3Client) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader, contentLength *int64) (string, error) {
 	input := &s3.UploadPartInput{
 		Bucket:     aws.String(bucket),
 		Key:        aws.String(key),
 		UploadId:   aws.String(uploadID),
 		PartNumber: aws.Int32(partNumber),
-        Body:       reader,
+		Body:       reader,
 	}
 
-    result, err := c.client.UploadPart(ctx, input)
+	if contentLength != nil {
+		input.ContentLength = contentLength
+	}
+
+	result, err := c.client.UploadPart(ctx, input)
 	if err != nil {
 		return "", fmt.Errorf("failed to upload part %d for %s/%s: %w", partNumber, bucket, key, err)
 	}

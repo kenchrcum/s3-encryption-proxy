@@ -122,7 +122,7 @@ func (p *ProxyClient) CreateMultipartUpload(ctx context.Context, bucket, key str
 }
 
 // UploadPart is not implemented
-func (p *ProxyClient) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader) (string, error) {
+func (p *ProxyClient) UploadPart(ctx context.Context, bucket, key, uploadID string, partNumber int32, reader io.Reader, contentLength *int64) (string, error) {
 	return "", fmt.Errorf("ProxyClient.UploadPart not implemented")
 }
 
@@ -150,4 +150,3 @@ func (p *ProxyClient) CopyObject(ctx context.Context, dstBucket, dstKey string, 
 func (p *ProxyClient) DeleteObjects(ctx context.Context, bucket string, keys []ObjectIdentifier) ([]DeletedObject, []ErrorObject, error) {
 	return nil, nil, fmt.Errorf("ProxyClient.DeleteObjects not implemented")
 }
-
