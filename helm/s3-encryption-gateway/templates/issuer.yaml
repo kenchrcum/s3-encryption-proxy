@@ -1,0 +1,16 @@
+{{- if and .Values.config.tls.enabled.value (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) }}
+{{- if and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1")) }}
+{{- if not .Values.certManager.issuer.clusterIssuer }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ default (include "s3-encryption-gateway.fullname" .) .Values.certManager.issuer.name }}-issuer
+  namespace: {{ default .Release.Namespace .Values.certManager.issuer.namespace }}
+  labels:
+    {{- include "s3-encryption-gateway.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+{{- end }}
+{{- end }}
+{{- end }}
+

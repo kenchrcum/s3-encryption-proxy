@@ -96,11 +96,22 @@ spec:
         {{- include "s3-encryption-gateway.envVar" (dict "name" "SERVER_MAX_HEADER_BYTES" "value" .Values.config.server.maxHeaderBytes.value "valueFrom" .Values.config.server.maxHeaderBytes.valueFrom) | nindent 8 }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "TLS_ENABLED" "value" .Values.config.tls.enabled.value "valueFrom" .Values.config.tls.enabled.valueFrom) | nindent 8 }}
         {{- if or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1") }}
+        {{- $useCertManager := false }}
+        {{- if and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1")) }}
+          {{- $useCertManager = true }}
+        {{- end }}
+        {{- if $useCertManager }}
+        - name: TLS_CERT_FILE
+          value: /etc/tls/tls.crt
+        - name: TLS_KEY_FILE
+          value: /etc/tls/tls.key
+        {{- else }}
         {{- if or .Values.config.tls.certFile.value .Values.config.tls.certFile.valueFrom }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "TLS_CERT_FILE" "value" .Values.config.tls.certFile.value "valueFrom" .Values.config.tls.certFile.valueFrom) | nindent 8 }}
         {{- end }}
         {{- if or .Values.config.tls.keyFile.value .Values.config.tls.keyFile.valueFrom }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "TLS_KEY_FILE" "value" .Values.config.tls.keyFile.value "valueFrom" .Values.config.tls.keyFile.valueFrom) | nindent 8 }}
+        {{- end }}
         {{- end }}
         {{- end }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "RATE_LIMIT_ENABLED" "value" .Values.config.rateLimit.enabled.value "valueFrom" .Values.config.rateLimit.enabled.valueFrom) | nindent 8 }}
@@ -124,6 +135,22 @@ spec:
           {{- toYaml .Values.readinessProbe | nindent 10 }}
         resources:
           {{- toYaml .Values.resources | nindent 10 }}
+        {{- if and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) }}
+        {{- if and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1")) }}
+        volumeMounts:
+          - name: tls-cert
+            mountPath: /etc/tls
+            readOnly: true
+        {{- end }}
+        {{- end }}
+      {{- if and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) }}
+      {{- if and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1")) }}
+      volumes:
+        - name: tls-cert
+          secret:
+            secretName: {{ include "s3-encryption-gateway.fullname" . }}-tls
+      {{- end }}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

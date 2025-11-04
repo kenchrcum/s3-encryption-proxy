@@ -1,0 +1,44 @@
+{{- if and .Values.config.tls.enabled.value (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) }}
+{{- if and .Values.config.tls.useCertManager.value (or (eq .Values.config.tls.useCertManager.value "true") (eq .Values.config.tls.useCertManager.value "1")) }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "s3-encryption-gateway.fullname" . }}-tls
+  namespace: {{ default .Release.Namespace .Values.certManager.issuer.namespace }}
+  labels:
+    {{- include "s3-encryption-gateway.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "s3-encryption-gateway.fullname" . }}-tls
+  {{- if .Values.certManager.certificate.duration }}
+  duration: {{ .Values.certManager.certificate.duration }}
+  {{- else }}
+  duration: 2160h # 90 days
+  {{- end }}
+  {{- if .Values.certManager.certificate.renewBefore }}
+  renewBefore: {{ .Values.certManager.certificate.renewBefore }}
+  {{- else }}
+  renewBefore: 720h # 30 days
+  {{- end }}
+  {{- if .Values.certManager.issuer.clusterIssuer }}
+  issuerRef:
+    kind: ClusterIssuer
+    name: {{ .Values.certManager.issuer.clusterIssuer }}
+  {{- else }}
+  issuerRef:
+    kind: Issuer
+    name: {{ default (include "s3-encryption-gateway.fullname" .) .Values.certManager.issuer.name }}-issuer
+  {{- end }}
+  commonName: {{ include "s3-encryption-gateway.fullname" . }}
+  dnsNames:
+    - {{ include "s3-encryption-gateway.fullname" . }}
+    - {{ include "s3-encryption-gateway.fullname" . }}.{{ .Release.Namespace }}
+    - {{ include "s3-encryption-gateway.fullname" . }}.{{ .Release.Namespace }}.svc
+    - {{ include "s3-encryption-gateway.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+    {{- if .Values.certManager.certificate.extraDNSNames }}
+    {{- range .Values.certManager.certificate.extraDNSNames }}
+    - {{ . }}
+    {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}
+

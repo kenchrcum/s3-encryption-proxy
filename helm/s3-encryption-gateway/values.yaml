@@ -184,6 +184,12 @@ config:
   tls:
     enabled:
       value: "false"
+    # Enable cert-manager for automatic certificate management
+    # When enabled, a self-signed certificate will be automatically created
+    # and mounted into the pod. The certFile and keyFile will be automatically
+    # configured to use the mounted certificate.
+    useCertManager:
+      value: "false"
     certFile:
       value: ""
       valueFrom: {}
@@ -225,6 +231,27 @@ config:
       value: "false"
     maxEvents:
       value: "10000"
+
+# cert-manager configuration
+certManager:
+  # Issuer configuration
+  issuer:
+    # Name for the issuer (defaults to fullname)
+    name: ""
+    # Namespace for the issuer (defaults to release namespace)
+    namespace: ""
+    # Self-signed issuer configuration
+    selfSigned: {}
+    # Or use ClusterIssuer instead (requires cluster-admin)
+    # clusterIssuer: "letsencrypt-prod"
+  # Certificate configuration
+  certificate:
+    # Additional DNS names for the certificate
+    extraDNSNames: []
+    # Certificate duration (default: 2160h = 90 days)
+    duration: "2160h"
+    # How long before expiry to renew (default: 720h = 30 days)
+    renewBefore: "720h"
 
 resources:
   limits:
