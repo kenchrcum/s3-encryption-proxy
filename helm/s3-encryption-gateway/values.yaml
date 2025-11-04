@@ -6,7 +6,7 @@ replicaCount: 1
 image:
   repository: kenchrcum/s3-encryption-gateway
   pullPolicy: IfNotPresent
-  tag: "0.3.1"
+  tag: "0.3.2"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -36,6 +36,9 @@ securityContext:
   allowPrivilegeEscalation: false
 
 service:
+  # Enable Service creation. Set to false if deploying multiple instances
+  # in different namespaces or using alternative ingress methods.
+  enabled: true
   type: ClusterIP
   port: 80
   targetPort: 8080

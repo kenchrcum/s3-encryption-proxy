@@ -186,8 +186,9 @@ config:
 |-----------|-------------|---------|
 | `replicaCount` | Number of replicas | `1` |
 | `image.repository` | Image repository | `kenchrcum/s3-encryption-gateway` |
-| `image.tag` | Image tag | `"0.3.1"` |
+| `image.tag` | Image tag | `"0.3.2"` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `service.enabled` | Enable Service creation | `true` |
 | `service.type` | Service type | `ClusterIP` |
 | `service.port` | Service port | `80` |
 | `service.targetPort` | Service target port | `8080` |
@@ -354,6 +355,17 @@ serviceMonitor:
     prometheus: kube-prometheus
 ```
 
+### Without Service (Namespace-Scoped Deployment)
+
+When deploying multiple gateway instances in different namespaces or using alternative ingress methods, you can disable the Service:
+
+```yaml
+service:
+  enabled: false
+```
+
+**Note**: When `service.enabled` is `false`, the ServiceMonitor will also be disabled automatically, as it requires a Service to function.
+
 ## Upgrading
 
 ```bash
@@ -400,8 +412,15 @@ kubectl get pods -l app.kubernetes.io/name=s3-encryption-gateway
 
 ### Test Health Endpoint
 
+If the Service is enabled:
 ```bash
 kubectl port-forward svc/s3-encryption-gateway 8080:80
+curl http://localhost:8080/health
+```
+
+If the Service is disabled, port-forward directly to a pod:
+```bash
+kubectl port-forward <pod-name> 8080:8080
 curl http://localhost:8080/health
 ```
 
