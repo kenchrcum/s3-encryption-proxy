@@ -133,6 +133,112 @@ func (r *DecryptReader) Read(p []byte) (n int, err error) {
 - **Large objects**: Stream processing prevents memory exhaustion
 - **Small objects**: Buffer entire object if < 1MB
 
+## Range Request Optimization
+
+### Overview
+For chunked encryption, range requests can be optimized by fetching and decrypting only the necessary chunks from S3, rather than downloading the entire encrypted object. This provides significant performance improvements for large objects with small range requests.
+
+### Chunked Encryption Format
+Objects are encrypted in fixed-size chunks with independent authentication:
+```
+Encrypted Object = Chunk_0 + Chunk_1 + ... + Chunk_N
+Chunk_i = IV_i + Ciphertext_i + AuthTag_i  (where each chunk is ChunkSize + 16 bytes)
+```
+
+### Range Request Processing
+
+#### Step 1: Calculate Required Chunks
+Given a plaintext range `[start, end]`, calculate which chunks contain the requested data:
+
+```go
+chunkSize = 65536  // 64KB chunks
+startChunk = start / chunkSize
+endChunk = end / chunkSize
+startOffset = start % chunkSize  // Offset within startChunk
+endOffset = end % chunkSize      // Offset within endChunk
+```
+
+#### Step 2: Calculate Encrypted Byte Range
+Convert plaintext chunk range to encrypted byte positions:
+
+```go
+encryptedChunkSize = chunkSize + 16  // Include auth tag
+encryptedStart = startChunk * encryptedChunkSize
+encryptedEnd = (endChunk + 1) * encryptedChunkSize - 1
+```
+
+#### Step 3: Optimized S3 Fetch
+Request only the necessary encrypted chunks:
+```
+GET /bucket/key HTTP/1.1
+Range: bytes=encryptedStart-encryptedEnd
+```
+
+#### Step 4: Range-Aware Decryption
+Decrypt only the chunks in the optimized range, extracting the requested plaintext portion.
+
+### Performance Characteristics
+
+#### Benefits
+- **Reduced network transfer**: Only fetch required chunks instead of entire object
+- **Reduced decryption overhead**: Only decrypt necessary chunks
+- **Maintained security**: All accessed chunks have authentication verified
+
+#### Worst-Case Overhead
+- **Extra chunk reads**: At most 1 additional chunk if range spans chunk boundaries
+- **Memory usage**: Bounded by chunk size (default 64KB + overhead)
+- **Authentication verification**: All touched chunks verified (security requirement)
+
+#### Example Performance
+For a 1GB object with 16KB range request:
+- **Unoptimized**: Transfer 1GB + decrypt 1GB
+- **Optimized**: Transfer ~64KB + decrypt ~64KB
+- **Improvement**: ~99.99% reduction in network and compute
+
+### Content-Range Header Mapping
+
+Range responses must correctly map plaintext ranges to HTTP Content-Range headers:
+
+```
+Content-Range: bytes <start>-<end>/<total>
+Content-Length: <actual_response_size>
+```
+
+Where:
+- `<start>`, `<end>`: Requested plaintext byte range
+- `<total>`: Total plaintext object size
+- `<actual_response_size>`: Size of returned data (may be less than requested range due to bounds)
+
+### ETag Preservation
+
+Range responses include the original object ETag (not the encrypted ETag) to maintain S3 API compatibility. The ETag is restored from metadata stored during encryption.
+
+### Error Handling
+
+#### Invalid Ranges
+- **Out of bounds**: `start < 0` or `end >= totalSize` → 416 Requested Range Not Satisfiable
+- **Invalid format**: Malformed range headers → 400 Bad Request
+- **Empty ranges**: `start > end` → Error response
+
+#### Decryption Failures
+- **Authentication failure**: Corrupted data → 500 Internal Server Error
+- **Missing chunks**: Incomplete S3 response → Retry or error
+- **Manifest errors**: Invalid chunk metadata → 500 Internal Server Error
+
+### Security Considerations
+
+#### Authentication Verification
+All chunks within the requested range have their authentication tags verified, ensuring:
+- **Integrity**: Tampered data is detected
+- **Confidentiality**: Only authorized decryption succeeds
+- **No skip attacks**: Cannot bypass authentication by requesting partial ranges
+
+#### Chunk Alignment
+Range optimization maintains chunk boundaries to ensure proper IV derivation and authentication. This prevents attacks that might exploit misaligned decryption.
+
+#### Memory Safety
+Range decryption uses streaming with bounded buffers, preventing memory exhaustion attacks on large range requests.
+
 ## Key Management
 
 ### Password-Based Security

@@ -779,6 +779,15 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
                 h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
                 return
             }
+
+            // Parse the original range to get correct Content-Range header
+            rangeStart, rangeEnd, err := crypto.ParseHTTPRangeHeader(*rangeHeader, int64(len(decryptedData)))
+            if err != nil {
+                // This shouldn't happen since applyRangeRequest succeeded, but handle gracefully
+                h.logger.WithError(err).Warn("Failed to parse range header for Content-Range")
+                rangeStart, rangeEnd = 0, int64(len(outputData)-1)
+            }
+
             // Set decrypted metadata headers
             for k, v := range decMetadata {
                 if !isEncryptionMetadata(k) {
@@ -788,7 +797,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
             if versionID != nil && *versionID != "" {
                 w.Header().Set("x-amz-version-id", *versionID)
             }
-            w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, len(outputData)-1, len(decryptedData)))
+            w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, len(decryptedData)))
             w.Header().Set("Content-Length", fmt.Sprintf("%d", len(outputData)))
             w.WriteHeader(http.StatusPartialContent)
         }

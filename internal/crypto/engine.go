@@ -565,6 +565,12 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 		return nil, nil, fmt.Errorf("failed to encode manifest: %w", err)
 	}
 
+// Extract original ETag for preservation
+originalETag := ""
+if metadata != nil {
+	originalETag = metadata["ETag"]
+}
+
 	// Prepare encryption metadata
 	encMetadata := make(map[string]string)
 	if metadata != nil {
@@ -582,6 +588,10 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 	encMetadata[MetaIV] = encodeBase64(baseIV)
 	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	encMetadata[MetaManifest] = manifestEncoded
+	// Store original ETag for restoration
+	if originalETag != "" {
+		encMetadata[MetaOriginalETag] = originalETag
+	}
 	// Note: MetaChunkCount is NOT set here because manifest.ChunkCount is 0 at this point
 	// (it only gets incremented during encryption). ChunkCount can be calculated during
 	// decryption from the encrypted object size and chunk size, or from the manifest if needed.
@@ -704,6 +714,17 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 	// Only supports chunked format for range optimization
 	if !isChunkedFormat(metadata) {
 		return nil, nil, fmt.Errorf("range optimization only supported for chunked format")
+	}
+
+	// Get plaintext size for validation
+	plaintextSize, err := GetPlaintextSizeFromMetadata(metadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to get plaintext size: %w", err)
+	}
+
+	// Validate range (similar to HTTP range validation)
+	if plaintextStart < 0 || plaintextStart >= plaintextSize || plaintextEnd < plaintextStart || plaintextEnd >= plaintextSize {
+		return nil, nil, fmt.Errorf("range not satisfiable: %d-%d (size: %d)", plaintextStart, plaintextEnd, plaintextSize)
 	}
 
 	// Load manifest

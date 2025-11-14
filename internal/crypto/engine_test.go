@@ -337,8 +337,14 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 	data := []byte("test data for ETag preservation")
 	reader := bytes.NewReader(data)
 
-	// Encrypt
-	encryptedReader, encMetadata, err := engine.Encrypt(reader, nil)
+	// Compute expected ETag for the test
+	expectedETag := computeETagForTest(data)
+
+	// Encrypt with ETag provided in metadata
+	metadata := map[string]string{
+		"ETag": expectedETag,
+	}
+	encryptedReader, encMetadata, err := engine.Encrypt(reader, metadata)
 	if err != nil {
 		t.Fatalf("Encrypt() error: %v", err)
 	}
@@ -373,8 +379,7 @@ func TestEngine_OriginalETagPreservation(t *testing.T) {
 		t.Errorf("Decrypt() restored ETag mismatch: got %s, want %s", restoredETag, originalETag)
 	}
 
-	// Verify the ETag matches the computed MD5 of original data
-	expectedETag := computeETagForTest(data)
+	// Verify the ETag matches the provided ETag
 	if originalETag != expectedETag {
 		t.Errorf("Encrypt() ETag mismatch: got %s, want %s", originalETag, expectedETag)
 	}

@@ -188,6 +188,7 @@ func (r *chunkedEncryptReader) Close() error {
 	return nil
 }
 
+
 // chunkedDecryptReader implements streaming decryption from chunked format.
 type chunkedDecryptReader struct {
 	source       io.Reader

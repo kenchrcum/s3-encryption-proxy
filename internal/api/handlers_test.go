@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -364,5 +365,144 @@ func TestHandler_HandleListObjects(t *testing.T) {
 
 	if w.Header().Get("Content-Type") != "application/xml" {
 		t.Errorf("expected Content-Type application/xml, got %s", w.Header().Get("Content-Type"))
+	}
+}
+
+// TestContentRangeMapping tests Content-Range and Content-Length header mapping for range requests
+func TestContentRangeMapping(t *testing.T) {
+	// Create a crypto engine that supports chunking and range decryption
+	engine, err := crypto.NewEngineWithChunking("test-password-123456", nil, "", nil, true, 16*1024)
+	if err != nil {
+		t.Fatalf("Failed to create engine: %v", err)
+	}
+
+	// Create test data (32KB to ensure chunking)
+	testData := make([]byte, 32*1024)
+	for i := range testData {
+		testData[i] = byte(i % 256)
+	}
+
+	// Encrypt the data with original ETag
+	originalMetadata := map[string]string{
+		"ETag": "\"original-etag-12345\"", // Mock original ETag
+	}
+	encryptedReader, metadata, err := engine.Encrypt(bytes.NewReader(testData), originalMetadata)
+	if err != nil {
+		t.Fatalf("Failed to encrypt: %v", err)
+	}
+
+	encryptedData, err := io.ReadAll(encryptedReader)
+	if err != nil {
+		t.Fatalf("Failed to read encrypted data: %v", err)
+	}
+
+	// Check that original ETag was stored
+	if metadata[crypto.MetaOriginalETag] == "" {
+		t.Fatalf("Original ETag not stored in metadata: %+v", metadata)
+	}
+
+	// Update metadata for chunked format
+	metadata[crypto.MetaEncrypted] = "true"
+	metadata[crypto.MetaChunkCount] = "2"  // 32KB / 16KB = 2 chunks
+	metadata[crypto.MetaChunkSize] = "16384"  // 16KB
+	metadata[crypto.MetaChunkedFormat] = "true"
+
+	// Create mock S3 client and populate it
+	mockClient := newMockS3Client()
+	mockClient.PutObject(context.Background(), "test-bucket", "range-test", bytes.NewReader(encryptedData), metadata, nil)
+
+	// Create handler
+	logger := logrus.New()
+	logger.SetLevel(logrus.ErrorLevel)
+	handler := NewHandler(mockClient, engine, logger, getTestMetrics())
+
+	// Test various range requests
+	testCases := []struct {
+		name                 string
+		rangeHeader          string
+		expectedStatus       int
+		expectedContentRange string
+		expectedContentLength string
+		expectedDataLength   int
+	}{
+		{
+			name:                 "simple range",
+			rangeHeader:          "bytes=1000-1999",
+			expectedStatus:       http.StatusPartialContent,
+			expectedContentRange: "bytes 1000-1999/32768",
+			expectedContentLength: "1000",
+			expectedDataLength:   1000,
+		},
+		{
+			name:                 "first byte",
+			rangeHeader:          "bytes=0-0",
+			expectedStatus:       http.StatusPartialContent,
+			expectedContentRange: "bytes 0-0/32768",
+			expectedContentLength: "1",
+			expectedDataLength:   1,
+		},
+		{
+			name:                 "last byte",
+			rangeHeader:          "bytes=32767-32767",
+			expectedStatus:       http.StatusPartialContent,
+			expectedContentRange: "bytes 32767-32767/32768",
+			expectedContentLength: "1",
+			expectedDataLength:   1,
+		},
+		{
+			name:                 "cross chunk boundary",
+			rangeHeader:          "bytes=16380-16390", // Spans chunk boundary
+			expectedStatus:       http.StatusPartialContent,
+			expectedContentRange: "bytes 16380-16390/32768",
+			expectedContentLength: "11",
+			expectedDataLength:   11,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			router := mux.NewRouter()
+			handler.RegisterRoutes(router)
+
+			req := httptest.NewRequest("GET", "/test-bucket/range-test", nil)
+			req.Header.Set("Range", tc.rangeHeader)
+			w := httptest.NewRecorder()
+
+			router.ServeHTTP(w, req)
+
+			if w.Code != tc.expectedStatus {
+				t.Errorf("expected status %d, got %d", tc.expectedStatus, w.Code)
+			}
+
+			if tc.expectedStatus == http.StatusPartialContent {
+				contentRange := w.Header().Get("Content-Range")
+				if contentRange != tc.expectedContentRange {
+					t.Errorf("Content-Range mismatch: expected %q, got %q", tc.expectedContentRange, contentRange)
+				}
+
+				contentLength := w.Header().Get("Content-Length")
+				if contentLength != tc.expectedContentLength {
+					t.Errorf("Content-Length mismatch: expected %q, got %q", tc.expectedContentLength, contentLength)
+				}
+
+				body := w.Body.Bytes()
+				if len(body) != tc.expectedDataLength {
+					t.Errorf("Body length mismatch: expected %d, got %d", tc.expectedDataLength, len(body))
+				}
+
+				// Verify Content-Length header matches actual body length
+				if contentLength != fmt.Sprintf("%d", len(body)) {
+					t.Errorf("Content-Length header (%s) doesn't match body length (%d)", contentLength, len(body))
+				}
+
+				// Verify ETag is preserved in range responses
+				etag := w.Header().Get("ETag")
+				if etag == "" {
+					t.Errorf("ETag header should be present in range response")
+				}
+				// The ETag should be the original ETag (not the encrypted object's ETag)
+				// We can't easily verify the exact value without more setup, but presence is key
+			}
+		})
 	}
 }

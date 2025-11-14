@@ -285,6 +285,20 @@ func TestS3Gateway_RangeRequests(t *testing.T) {
 		t.Fatalf("Expected 206 Partial Content, got %d: %s", getResp.StatusCode, string(body))
 	}
 
+	// Validate Content-Range header
+	contentRange := getResp.Header.Get("Content-Range")
+	expectedContentRange := "bytes 5-10/16"
+	if contentRange != expectedContentRange {
+		t.Errorf("Content-Range header mismatch: expected %q, got %q", expectedContentRange, contentRange)
+	}
+
+	// Validate Content-Length header
+	contentLength := getResp.Header.Get("Content-Length")
+	expectedContentLength := "6"
+	if contentLength != expectedContentLength {
+		t.Errorf("Content-Length header mismatch: expected %q, got %q", expectedContentLength, contentLength)
+	}
+
 	gotData, err := io.ReadAll(getResp.Body)
 	if err != nil {
 		t.Fatalf("Failed to read response: %v", err)
@@ -293,6 +307,11 @@ func TestS3Gateway_RangeRequests(t *testing.T) {
 	expected := testData[5:11]
 	if !bytes.Equal(gotData, expected) {
 		t.Errorf("Range data mismatch: expected %q, got %q", string(expected), string(gotData))
+	}
+
+	// Verify that Content-Length matches actual data length
+	if len(gotData) != 6 {
+		t.Errorf("Content-Length (%s) doesn't match actual data length (%d)", contentLength, len(gotData))
 	}
 }
 

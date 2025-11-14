@@ -23,10 +23,12 @@ type rangeDecryptReader struct {
 	endOffsetInChunk   int
 	buffer             []byte
 	currentChunk       []byte
-	currentChunkIndex  int
+	currentChunkIndex  int  // Absolute chunk index for IV derivation
+	sourceChunkIndex   int  // Relative index in the source stream (0, 1, 2, ...)
 	bytesReturned      int64
 	closed             bool
 	err                error
+	isOptimized        bool // Whether source contains only needed chunks
 }
 
 // newRangeDecryptReader creates a decryption reader that only decrypts chunks needed for a range.
@@ -50,16 +52,11 @@ func newRangeDecryptReader(
 		return nil, fmt.Errorf("invalid chunk range: %d-%d (total chunks: %d)", startChunk, endChunk, manifest.ChunkCount)
 	}
 
-	// If startChunk > 0, we need to skip encrypted chunks before it.
-	// However, if the source reader already contains only the needed encrypted chunks
-	// (from optimized S3 range fetch), we don't need to skip.
-	// For now, we skip in case source contains full encrypted object (fallback scenario).
-	// TODO: Add a parameter to indicate if source is already optimized (contains only needed chunks)
+	// Assume source contains full encrypted object (for backward compatibility)
+	// Skip to startChunk if needed
 	if startChunk > 0 {
 		encryptedChunkSize := manifest.ChunkSize + tagSize
 		skipBytes := int64(startChunk) * int64(encryptedChunkSize)
-
-		// Skip to the start chunk
 		skipped, err := io.CopyN(io.Discard, source, skipBytes)
 		if err != nil && err != io.EOF {
 			return nil, fmt.Errorf("failed to skip to start chunk: %w", err)
@@ -70,7 +67,7 @@ func newRangeDecryptReader(
 	}
 
 	encryptedChunkSize := manifest.ChunkSize + tagSize
-	
+
 	return &rangeDecryptReader{
 		source:             source,
 		aead:               aead,
@@ -85,8 +82,12 @@ func newRangeDecryptReader(
 		endOffsetInChunk:   endOffset,
 		buffer:             make([]byte, encryptedChunkSize),
 		currentChunk:       nil,
-		currentChunkIndex:  startChunk - 1, // Will be incremented to startChunk on first Read
+		currentChunkIndex:  startChunk, // Start from startChunk
+		sourceChunkIndex:   0,
 		bytesReturned:      0,
+		closed:             false,
+		err:                nil,
+		isOptimized:        false, // Assume not optimized for backward compatibility
 	}, nil
 }
 
@@ -142,7 +143,7 @@ func (r *rangeDecryptReader) Read(p []byte) (int, error) {
 		}
 
 		// Check if we've processed all needed chunks
-		if r.currentChunkIndex >= r.endChunk {
+		if r.currentChunkIndex > r.endChunk {
 			r.closed = true
 			if totalRead > 0 {
 				return totalRead, nil
@@ -151,10 +152,9 @@ func (r *rangeDecryptReader) Read(p []byte) (int, error) {
 		}
 
 		// Read and decrypt next chunk
-		r.currentChunkIndex++
 		encryptedChunkSize := r.chunkSize + tagSize
 
-		// For last chunk, it might be smaller
+		// For last chunk in the source, it might be smaller
 		var expectedSize int
 		if r.currentChunkIndex == r.manifest.ChunkCount-1 {
 			// Last chunk might be partial - read what we can
@@ -205,6 +205,10 @@ func (r *rangeDecryptReader) Read(p []byte) (int, error) {
 		}
 
 		r.currentChunk = append(r.currentChunk, chunkData...)
+
+		// Move to next chunk
+		r.currentChunkIndex++
+		r.sourceChunkIndex++
 	}
 
 	return totalRead, nil
