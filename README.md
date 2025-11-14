@@ -184,6 +184,50 @@ make run
 make docker-build
 ```
 
+### Docker Compose
+
+For local development and testing, use the provided Docker Compose setup:
+
+```bash
+# Copy the example configuration
+cp docker-compose.example.yml docker-compose.yml
+cp docker-compose.env.example .env
+
+# Edit .env with your configuration
+nano .env
+
+# Start the services
+docker-compose up -d
+
+# View logs
+docker-compose logs -f gateway
+```
+
+**Services included:**
+- **MinIO**: S3-compatible backend storage for development/testing
+- **S3 Encryption Gateway**: The encryption proxy running on port 8080
+
+**Configuration:**
+- Edit `.env` to customize backend, encryption, and other settings
+- The gateway automatically connects to MinIO backend
+- Access MinIO Console at http://localhost:9001
+- Gateway API available at http://localhost:8080
+
+**Example .env configuration:**
+```bash
+# Required: Set a secure encryption password
+ENCRYPTION_PASSWORD=your-secure-password-here
+
+# Optional: Configure backend (defaults to local MinIO)
+BACKEND_ENDPOINT=http://localhost:9000
+BACKEND_ACCESS_KEY=minioadmin
+BACKEND_SECRET_KEY=minioadmin123
+
+# Optional: Enable features
+COMPRESSION_ENABLED=true
+CACHE_ENABLED=true
+```
+
 ## Kubernetes Deployment
 
 The gateway includes Helm charts for easy Kubernetes deployment. See the [Helm chart documentation](helm/s3-encryption-gateway/README.md) for detailed deployment instructions.

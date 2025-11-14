@@ -1,0 +1,90 @@
+version: '3.8'
+
+# Example docker-compose configuration for S3 Encryption Gateway
+# Copy this file to docker-compose.yml and customize as needed
+
+services:
+  # S3-compatible backend storage
+  # For production, replace with your actual S3 provider (AWS S3, MinIO, etc.)
+  backend:
+    image: minio/minio:latest
+    container_name: s3-backend
+    ports:
+      - "9000:9000"
+      - "9001:9001"  # MinIO Console (if using MinIO)
+    environment:
+      MINIO_ROOT_USER: ${BACKEND_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${BACKEND_SECRET_KEY:-minioadmin123}
+      MINIO_REGION_NAME: ${BACKEND_REGION:-us-east-1}
+    command: server /data --console-address ":9001"
+    volumes:
+      - backend-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - s3-gateway
+
+  # S3 Encryption Gateway
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: s3-encryption-gateway
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      # Gateway configuration
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # Backend S3 configuration
+      BACKEND_ENDPOINT: ${BACKEND_ENDPOINT:-http://backend:9000}
+      BACKEND_REGION: ${BACKEND_REGION:-us-east-1}
+      BACKEND_ACCESS_KEY: ${BACKEND_ACCESS_KEY}
+      BACKEND_SECRET_KEY: ${BACKEND_SECRET_KEY}
+      BACKEND_USE_SSL: ${BACKEND_USE_SSL:-false}
+
+      # Encryption configuration (REQUIRED - change this!)
+      ENCRYPTION_PASSWORD: ${ENCRYPTION_PASSWORD}
+      ENCRYPTION_PREFERRED_ALGORITHM: ${ENCRYPTION_PREFERRED_ALGORITHM:-AES256-GCM}
+
+      # Optional: Compression settings
+      COMPRESSION_ENABLED: ${COMPRESSION_ENABLED:-false}
+      COMPRESSION_MIN_SIZE: ${COMPRESSION_MIN_SIZE:-1024}
+
+      # Optional: Caching for performance
+      CACHE_ENABLED: ${CACHE_ENABLED:-false}
+      CACHE_MAX_SIZE: ${CACHE_MAX_SIZE:-104857600}  # 100MB
+      CACHE_DEFAULT_TTL: ${CACHE_DEFAULT_TTL:-5m}
+
+      # Optional: Rate limiting
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-false}
+      RATE_LIMIT_LIMIT: ${RATE_LIMIT_LIMIT:-100}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-60s}
+
+      # Optional: Audit logging
+      AUDIT_ENABLED: ${AUDIT_ENABLED:-false}
+
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - s3-gateway
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+    driver: local
+
+networks:
+  s3-gateway:
+    driver: bridge
