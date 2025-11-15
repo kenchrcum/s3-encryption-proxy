@@ -6,8 +6,57 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
+	"strings"
 	"testing"
+	"time"
 )
+
+// createBucketInMinIO creates a bucket directly in MinIO using AWS CLI
+func createBucketInMinIO(t *testing.T, minioServer *MinIOTestServer) {
+	t.Helper()
+
+	// Set AWS CLI configuration for MinIO
+	t.Logf("Configuring AWS CLI with credentials: %s/%s", minioServer.AccessKey, strings.Repeat("*", len(minioServer.SecretKey)))
+	cmd := exec.Command("aws", "configure", "set", "aws_access_key_id", minioServer.AccessKey)
+	if err := cmd.Run(); err != nil {
+		t.Logf("Warning: Failed to configure AWS CLI access key: %v", err)
+	}
+
+	cmd = exec.Command("aws", "configure", "set", "aws_secret_access_key", minioServer.SecretKey)
+	if err := cmd.Run(); err != nil {
+		t.Logf("Warning: Failed to configure AWS CLI secret key: %v", err)
+	}
+
+	cmd = exec.Command("aws", "configure", "set", "region", "us-east-1")
+	if err := cmd.Run(); err != nil {
+		t.Logf("Warning: Failed to configure AWS CLI region: %v", err)
+	}
+
+	// Try to create bucket using AWS CLI
+	for attempts := 0; attempts < 5; attempts++ {
+		t.Logf("Attempting to create bucket %s with AWS CLI (attempt %d)", minioServer.Bucket, attempts+1)
+		cmd := exec.Command("aws", "s3", "mb", fmt.Sprintf("s3://%s", minioServer.Bucket),
+			"--endpoint-url", minioServer.Endpoint,
+			"--no-verify-ssl")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			t.Logf("Successfully created bucket %s in MinIO using AWS CLI", minioServer.Bucket)
+			return
+		}
+		// Check if bucket already exists (which is OK)
+		outputStr := string(output)
+		if strings.Contains(outputStr, "BucketAlreadyOwnedByYou") || strings.Contains(outputStr, "BucketAlreadyExists") {
+			t.Logf("Bucket %s already exists (created by SDK), proceeding", minioServer.Bucket)
+			return
+		}
+		t.Logf("Attempt %d: Failed to create bucket with AWS CLI: %v, output: %s", attempts+1, err, outputStr)
+		time.Sleep(time.Duration(attempts+1) * 500 * time.Millisecond)
+	}
+
+	// If we get here, bucket creation failed, but continue anyway
+	t.Logf("Warning: Could not create bucket %s with AWS CLI, proceeding with test", minioServer.Bucket)
+}
 
 // TestS3Gateway_EndToEnd tests basic PUT/GET operations with encryption.
 func TestS3Gateway_EndToEnd(t *testing.T) {
@@ -17,6 +66,9 @@ func TestS3Gateway_EndToEnd(t *testing.T) {
 
 	minioServer := StartMinIOServer(t)
 	defer minioServer.Stop()
+
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
 
 	gateway := StartGateway(t, minioServer.GetGatewayConfig())
 	defer gateway.Close()
@@ -131,8 +183,8 @@ func TestS3Gateway_MultipartUpload(t *testing.T) {
 
 	uploadID := initResult.UploadId
 
-	// 2. Upload parts
-	part1Data := []byte("part 1 data")
+	// 2. Upload parts (MinIO requires minimum 5MB parts for multipart upload)
+	part1Data := bytes.Repeat([]byte("a"), 5*1024*1024) // 5MB
 	part1URL := fmt.Sprintf("http://%s/%s/%s?partNumber=1&uploadId=%s", gateway.Addr, bucket, key, uploadID)
 	part1Req, err := http.NewRequest("PUT", part1URL, bytes.NewReader(part1Data))
 	if err != nil {
@@ -486,6 +538,9 @@ func TestS3Gateway_ListObjects(t *testing.T) {
 	minioServer := StartMinIOServer(t)
 	defer minioServer.Stop()
 
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
+
 	gateway := StartGateway(t, minioServer.GetGatewayConfig())
 	defer gateway.Close()
 
@@ -556,6 +611,9 @@ func TestS3Gateway_ListObjects_Delimiter(t *testing.T) {
 	minioServer := StartMinIOServer(t)
 	defer minioServer.Stop()
 
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
+
 	gateway := StartGateway(t, minioServer.GetGatewayConfig())
 	defer gateway.Close()
 
@@ -572,19 +630,37 @@ func TestS3Gateway_ListObjects_Delimiter(t *testing.T) {
 
 	for _, key := range testObjects {
 		putURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, key)
-		putReq, err := http.NewRequest("PUT", putURL, bytes.NewReader([]byte("test data")))
-		if err != nil {
-			t.Fatalf("Failed to create PUT request: %v", err)
-		}
 
-		putResp, err := client.Do(putReq)
-		if err != nil {
-			t.Fatalf("PUT request failed: %v", err)
-		}
-		putResp.Body.Close()
+		// Retry logic for bucket creation
+		var putResp *http.Response
+		var err error
+		maxRetries := 3
 
-		if putResp.StatusCode != http.StatusOK {
-			t.Fatalf("PUT failed with status %d", putResp.StatusCode)
+		for attempt := 0; attempt < maxRetries; attempt++ {
+			putReq, reqErr := http.NewRequest("PUT", putURL, bytes.NewReader([]byte("test data")))
+			if reqErr != nil {
+				t.Fatalf("Failed to create PUT request: %v", reqErr)
+			}
+
+			putResp, err = client.Do(putReq)
+			if err != nil {
+				t.Fatalf("PUT request failed: %v", err)
+			}
+			putResp.Body.Close()
+
+			if putResp.StatusCode == http.StatusOK {
+				break
+			}
+
+			if putResp.StatusCode == http.StatusNotFound && attempt < maxRetries-1 {
+				// Bucket doesn't exist yet, wait and retry
+				time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+				continue
+			}
+
+			if putResp.StatusCode != http.StatusOK {
+				t.Fatalf("PUT failed with status %d for key %s", putResp.StatusCode, key)
+			}
 		}
 	}
 
@@ -637,6 +713,9 @@ func TestS3Gateway_ListObjects_Prefix(t *testing.T) {
 
 	minioServer := StartMinIOServer(t)
 	defer minioServer.Stop()
+
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
 
 	gateway := StartGateway(t, minioServer.GetGatewayConfig())
 	defer gateway.Close()
@@ -721,6 +800,9 @@ func TestS3Gateway_ListObjects_MaxKeys(t *testing.T) {
 
 	minioServer := StartMinIOServer(t)
 	defer minioServer.Stop()
+
+	// Create bucket directly in MinIO first
+	createBucketInMinIO(t, minioServer)
 
 	gateway := StartGateway(t, minioServer.GetGatewayConfig())
 	defer gateway.Close()
@@ -841,5 +923,18 @@ func TestS3Gateway_ErrorHandling(t *testing.T) {
 	}
 	if !bytes.Contains(body, []byte("<Message>")) {
 		t.Error("Error response missing <Message> element")
+	}
+}
+
+// TestZZZ_Cleanup runs last to clean up the MinIO server
+func TestZZZ_Cleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping cleanup test in short mode")
+	}
+
+	// Only run if we have a MinIO server instance
+	if minioServer != nil {
+		t.Log("Cleaning up MinIO server...")
+		minioServer.StopForce()
 	}
 }

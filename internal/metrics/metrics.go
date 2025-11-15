@@ -39,6 +39,12 @@ func NewMetrics() *Metrics {
 	return newMetricsWithRegistry(defaultRegistry)
 }
 
+// NewMetricsWithRegistry creates a new metrics instance with a custom registry.
+// This is useful for testing to avoid metric registration conflicts.
+func NewMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
+	return newMetricsWithRegistry(reg)
+}
+
 // newMetricsWithRegistry creates a new metrics instance with a custom registry (for testing).
 func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 	factory := promauto.With(reg)

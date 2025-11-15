@@ -2,6 +2,7 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -41,13 +42,14 @@ func TestProvider_Compatibility(t *testing.T) {
 	testData := []byte("provider compatibility test data")
 
 	// Put object
-    err = client.PutObject(nil, bucket, key, bytes.NewReader(testData), nil, nil)
+    ctx := context.Background()
+    err = client.PutObject(ctx, bucket, key, bytes.NewReader(testData), nil, nil)
 	if err != nil {
 		t.Fatalf("PutObject failed with MinIO provider: %v", err)
 	}
 
 	// Get object
-	reader, metadata, err := client.GetObject(nil, bucket, key, nil, nil)
+	reader, metadata, err := client.GetObject(ctx, bucket, key, nil, nil)
 	if err != nil {
 		t.Fatalf("GetObject failed with MinIO provider: %v", err)
 	}
@@ -111,7 +113,8 @@ func TestProvider_EndpointConfiguration(t *testing.T) {
 			}
 
 			// Test that client can list objects (basic connectivity test)
-			_, err = client.ListObjects(nil, minioServer.Bucket, "", s3.ListOptions{MaxKeys: 1})
+			ctx := context.Background()
+			_, err = client.ListObjects(ctx, minioServer.Bucket, "", s3.ListOptions{MaxKeys: 1})
 			if err != nil {
 				// ListObjects may fail if bucket doesn't exist yet, which is OK
 				t.Logf("ListObjects note: %v (expected if bucket is empty)", err)

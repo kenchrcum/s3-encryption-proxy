@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +26,8 @@ type MinIOTestServer struct {
 	cmd        *exec.Cmd
 	once       sync.Once
 	cleanup    func()
+	refCount   int
+	refMutex   sync.Mutex
 }
 
 var (
@@ -39,29 +42,57 @@ func StartMinIOServer(t *testing.T) *MinIOTestServer {
 	t.Helper()
 
 	minioOnce.Do(func() {
-		server := &MinIOTestServer{
-			AccessKey: "minioadmin",
-			SecretKey: "minioadmin",
-			Bucket:    "test-bucket",
+		// Use environment variables for MinIO credentials
+		accessKey := os.Getenv("MINIO_ROOT_USER")
+		if accessKey == "" {
+			accessKey = "minioadmin"
+		}
+		secretKey := os.Getenv("MINIO_ROOT_PASSWORD")
+		if secretKey == "" {
+			secretKey = "minioadmin"
 		}
 
-		// Try Docker first
+		// Use unique bucket name per test run
+		bucketName := fmt.Sprintf("test-bucket-%d", time.Now().UnixNano())
+
+		server := &MinIOTestServer{
+			AccessKey: accessKey,
+			SecretKey: secretKey,
+			Bucket:    bucketName,
+		}
+
+		// Try Docker first, then fallback to MinIO binary
+		var err error
+		t.Logf("Testing Docker availability...")
 		if hasDocker() {
-			err := server.startDockerMinIO(t)
+			t.Logf("Docker is available, trying Docker MinIO...")
+			err = server.startDockerMinIO(t)
 			if err != nil {
-				minioError = err
-				return
+				t.Logf("Docker MinIO failed: %v", err)
 			}
 		} else {
-			// Fallback: check if MinIO binary is available
+			t.Logf("Docker not available")
+		}
+
+		// If Docker failed or is not available, try MinIO binary
+		if err != nil || !hasDocker() {
+			t.Logf("Testing MinIO binary availability...")
 			if hasMinIOBinary() {
-				err := server.startBinaryMinIO(t)
+				t.Logf("MinIO binary available, trying binary MinIO...")
+				err = server.startBinaryMinIO(t)
 				if err != nil {
+					t.Logf("Binary MinIO failed: %v", err)
 					minioError = err
 					return
 				}
+				t.Logf("Binary MinIO started successfully")
 			} else {
-				minioError = fmt.Errorf("MinIO server not available. Install Docker or MinIO binary for integration tests")
+				t.Logf("MinIO binary not available")
+				if hasDocker() {
+					minioError = fmt.Errorf("MinIO server setup failed: Docker networking issues and no MinIO binary available. Original error: %w", err)
+				} else {
+					minioError = fmt.Errorf("MinIO server not available. Install Docker or MinIO binary for integration tests")
+				}
 				return
 			}
 		}
@@ -73,6 +104,11 @@ func StartMinIOServer(t *testing.T) *MinIOTestServer {
 		t.Skipf("MinIO server setup failed: %v", minioError)
 		return nil
 	}
+
+	// Increment reference count
+	minioServer.refMutex.Lock()
+	minioServer.refCount++
+	minioServer.refMutex.Unlock()
 
 	return minioServer
 }
@@ -91,7 +127,7 @@ func hasDockerCompose() bool {
 
 // hasMinIOBinary checks if MinIO binary is available in PATH.
 func hasMinIOBinary() bool {
-	cmd := exec.Command("minio", "version")
+	cmd := exec.Command("minio", "--version")
 	return cmd.Run() == nil
 }
 
@@ -123,11 +159,15 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) error {
 			cmd = exec.Command("docker", "compose", "-f", dockerComposePath, "up", "-d")
 		}
 		
-		if cmd != nil && cmd.Run() == nil {
+		if cmd != nil {
+			if err := cmd.Run(); err != nil {
+				return fmt.Errorf("failed to start MinIO Docker container: %w", err)
+			}
+
 			// Wait a bit for MinIO to start
 			time.Sleep(3 * time.Second)
 			m.Endpoint = "http://localhost:9000"
-			
+
 			// Verify MinIO is running
 			if err := m.waitForMinIO(); err != nil {
 				var downCmd *exec.Cmd
@@ -159,17 +199,31 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) error {
 	m.Endpoint = fmt.Sprintf("http://localhost:%s", port)
 
 	// Start MinIO in Docker
+	// Use environment variables if set, otherwise use the configured values
+	minioUser := os.Getenv("MINIO_ROOT_USER")
+	if minioUser == "" {
+		minioUser = m.AccessKey
+	}
+	minioPassword := os.Getenv("MINIO_ROOT_PASSWORD")
+	if minioPassword == "" {
+		minioPassword = m.SecretKey
+	}
+
 	cmd := exec.Command("docker", "run", "--rm", "-d",
 		"-p", fmt.Sprintf("%s:9000", port),
 		"-p", "9001:9001",
-		"-e", fmt.Sprintf("MINIO_ROOT_USER=%s", m.AccessKey),
-		"-e", fmt.Sprintf("MINIO_ROOT_PASSWORD=%s", m.SecretKey),
+		"-e", fmt.Sprintf("MINIO_ROOT_USER=%s", minioUser),
+		"-e", fmt.Sprintf("MINIO_ROOT_PASSWORD=%s", minioPassword),
+		"-e", "MINIO_API_BUCKET_AUTO_CREATION=on",
+		"-e", "MINIO_API_ROOT_ACCESS=on",
 		"--name", containerName,
 		"minio/minio:latest",
 		"server", "/data", "--console-address", ":9001",
 	)
 
 	if err := cmd.Run(); err != nil {
+		// Clean up any partially created container
+		exec.Command("docker", "rm", "-f", containerName).Run()
 		return fmt.Errorf("failed to start MinIO Docker container: %w", err)
 	}
 
@@ -213,9 +267,20 @@ func (m *MinIOTestServer) startBinaryMinIO(t *testing.T) error {
 		"--console-address", ":9001",
 	)
 	cmd.Env = os.Environ()
+	// Use environment variables if set, otherwise use the configured values
+	minioUser := os.Getenv("MINIO_ROOT_USER")
+	if minioUser == "" {
+		minioUser = m.AccessKey
+	}
+	minioPassword := os.Getenv("MINIO_ROOT_PASSWORD")
+	if minioPassword == "" {
+		minioPassword = m.SecretKey
+	}
 	cmd.Env = append(cmd.Env,
-		fmt.Sprintf("MINIO_ROOT_USER=%s", m.AccessKey),
-		fmt.Sprintf("MINIO_ROOT_PASSWORD=%s", m.SecretKey),
+		fmt.Sprintf("MINIO_ROOT_USER=%s", minioUser),
+		fmt.Sprintf("MINIO_ROOT_PASSWORD=%s", minioPassword),
+		"MINIO_API_BUCKET_AUTO_CREATION=on", // Allow automatic bucket creation
+		"MINIO_API_ROOT_ACCESS=on", // Allow root access
 	)
 
 	if err := cmd.Start(); err != nil {
@@ -269,8 +334,58 @@ func (m *MinIOTestServer) waitForMinIO() error {
 	}
 }
 
-// createBucket creates the test bucket in MinIO using AWS SDK.
+// createBucket creates the test bucket in MinIO.
 func (m *MinIOTestServer) createBucket() error {
+	// Wait for MinIO to be ready
+	time.Sleep(2 * time.Second)
+
+	// Try to create bucket using AWS CLI
+	return m.createBucketViaAWSCLI()
+}
+
+// createBucketViaAWSCLI creates the bucket using AWS CLI.
+func (m *MinIOTestServer) createBucketViaAWSCLI() error {
+	// Configure AWS CLI for MinIO
+	cmd := exec.Command("aws", "configure", "set", "aws_access_key_id", m.AccessKey)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to configure AWS CLI access key: %w", err)
+	}
+
+	cmd = exec.Command("aws", "configure", "set", "aws_secret_access_key", m.SecretKey)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to configure AWS CLI secret key: %w", err)
+	}
+
+	cmd = exec.Command("aws", "configure", "set", "region", "us-east-1")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to configure AWS CLI region: %w", err)
+	}
+
+	// Try to create bucket using AWS CLI with retries
+	for attempts := 0; attempts < 5; attempts++ {
+		cmd = exec.Command("aws", "s3", "mb", fmt.Sprintf("s3://%s", m.Bucket),
+			"--endpoint-url", m.Endpoint,
+			"--no-verify-ssl")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			return nil
+		}
+
+		outputStr := string(output)
+		if strings.Contains(outputStr, "SlowDownWrite") {
+			// Wait before retrying
+			time.Sleep(time.Duration(attempts+1) * time.Second)
+			continue
+		}
+
+		return fmt.Errorf("failed to create bucket with AWS CLI: %w, output: %s", err, outputStr)
+	}
+
+	return fmt.Errorf("failed to create bucket after retries")
+}
+
+// createBucketViaSDK creates the test bucket using AWS SDK (fallback method).
+func (m *MinIOTestServer) createBucketViaSDK() error {
 	cfg := &config.BackendConfig{
 		Endpoint:  m.Endpoint,
 		Region:    "us-east-1",
@@ -285,22 +400,38 @@ func (m *MinIOTestServer) createBucket() error {
 		return fmt.Errorf("failed to create S3 client: %w", err)
 	}
 
-	// Create bucket by putting a dummy object
-	// MinIO/S3 creates buckets implicitly on first object
+	// Try to create bucket explicitly by putting a dummy object
+	// MinIO should create buckets implicitly on first PUT
 	testKey := ".bucket-init"
 	ctx := context.Background()
 	emptyReader := bytes.NewReader([]byte{})
-    err = client.PutObject(ctx, m.Bucket, testKey, emptyReader, nil, nil)
-	if err != nil {
-		// Bucket will be created when first real object is uploaded
-		// This is acceptable for MinIO
+
+	// Try multiple times in case MinIO needs a moment to be ready
+	for attempts := 0; attempts < 5; attempts++ {
+		err = client.PutObject(ctx, m.Bucket, testKey, emptyReader, nil, nil)
+		if err == nil {
+			fmt.Printf("Successfully created bucket %s via SDK\n", m.Bucket)
+			return nil
+		}
+		fmt.Printf("Attempt %d: Failed to create bucket %s: %v\n", attempts+1, m.Bucket, err)
+		time.Sleep(time.Duration(attempts+1) * time.Second)
 	}
 
+	// Don't fail - bucket will be created on first real PUT from the test
+	fmt.Printf("Warning: Could not pre-create test bucket %s after retries, proceeding anyway\n", m.Bucket)
 	return nil
 }
 
 // Stop stops the MinIO server and cleans up resources.
+// Note: For integration tests, we don't actually stop the server to allow
+// multiple tests to share the same instance. Use StopForce() for explicit cleanup.
 func (m *MinIOTestServer) Stop() {
+	// Don't actually stop - let tests share the server
+	// This is a no-op to prevent premature server shutdown
+}
+
+// StopForce forcibly stops the MinIO server.
+func (m *MinIOTestServer) StopForce() {
 	m.once.Do(func() {
 		if m.cleanup != nil {
 			m.cleanup()
@@ -326,7 +457,7 @@ func (m *MinIOTestServer) GetS3Client() (s3.Client, error) {
 func (m *MinIOTestServer) GetGatewayConfig() *config.Config {
 	return &config.Config{
 		ListenAddr: ":18080", // Use different port to avoid conflicts
-		LogLevel:   "error",
+		LogLevel:   "info",
 		Backend: config.BackendConfig{
 			Endpoint:  m.Endpoint,
 			Region:    "us-east-1",

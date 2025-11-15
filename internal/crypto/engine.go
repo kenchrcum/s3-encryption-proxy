@@ -1383,3 +1383,4 @@ func decodeMetadataFromJSON(data []byte) (map[string]string, error) {
 	err := json.Unmarshal(data, &metadata)
 	return metadata, err
 }
+

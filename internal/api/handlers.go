@@ -487,6 +487,11 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	bucket := vars["bucket"]
 	key := vars["key"]
 
+	h.logger.WithFields(logrus.Fields{
+		"bucket": bucket,
+		"key": key,
+	}).Debug("Starting GET object")
+
 	if bucket == "" || key == "" {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
@@ -618,6 +623,12 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer reader.Close()
+
+	h.logger.WithFields(logrus.Fields{
+		"bucket": bucket,
+		"key": key,
+		"is_encrypted": h.encryptionEngine.IsEncrypted(metadata),
+	}).Debug("GET object retrieved from backend")
 
 	// Decrypt if encrypted
 	decryptStart := time.Now()
@@ -842,6 +853,11 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	bucket := vars["bucket"]
 	key := vars["key"]
 
+	h.logger.WithFields(logrus.Fields{
+		"bucket": bucket,
+		"key": key,
+	}).Debug("Starting PUT object")
+
 	if bucket == "" || key == "" {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
@@ -891,9 +907,11 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	// Extract Content-Type for encryption engine (for compression decisions)
 	// The encryption engine reads it from metadata, but we'll filter it out before S3
 	// This is a temporary inclusion - filterS3Metadata will remove it
-	if contentType := r.Header.Get("Content-Type"); contentType != "" {
-		metadata["Content-Type"] = contentType
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "" {
+		contentType = "application/octet-stream" // Default to match MinIO's behavior
 	}
+	metadata["Content-Type"] = contentType
 
     // Include key version in metadata if key manager is enabled
     if h.keyManager != nil {
@@ -986,7 +1004,11 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
         filterKeys = h.config.Backend.FilterMetadataKeys
     }
     s3Metadata := filterS3Metadata(encMetadata, filterKeys)
-    
+
+	h.logger.WithFields(logrus.Fields{
+		"bucket": bucket,
+		"key": key,
+	}).Debug("PUT object encrypted successfully")
     // Log filtered metadata keys and value sizes for debugging
     filteredKeys := make([]string, 0, len(s3Metadata))
     metadataSizes := make(map[string]int)
@@ -1950,6 +1972,13 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		}
 	}
 
+	// Preserve Content-Type from source object if not specified in copy request
+	if _, hasContentType := dstMetadata["Content-Type"]; !hasContentType {
+		if srcContentType, ok := srcMetadata["Content-Type"]; ok {
+			dstMetadata["Content-Type"] = srcContentType
+		}
+	}
+
 	// Re-encrypt for destination
 	encryptedReader, encMetadata, err := h.encryptionEngine.Encrypt(bytes.NewReader(decryptedData), dstMetadata)
 	if err != nil {
@@ -2169,3 +2198,4 @@ func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request) {
 	h.metrics.RecordS3Operation("DeleteObjects", bucket, time.Since(start))
 	h.metrics.RecordHTTPRequest("POST", r.URL.Path, http.StatusOK, time.Since(start), 0)
 }
+

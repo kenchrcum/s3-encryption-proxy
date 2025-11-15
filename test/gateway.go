@@ -14,6 +14,7 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/metrics"
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/sirupsen/logrus"
 )
 
@@ -43,8 +44,9 @@ func StartGateway(t *testing.T, cfg *config.Config) *TestGateway {
 	logger := logrus.New()
 	logger.SetLevel(logrus.ErrorLevel) // Only errors in tests
 
-	// Initialize metrics
-	m := metrics.NewMetrics()
+	// Initialize metrics with custom registry to avoid conflicts between tests
+	reg := prometheus.NewRegistry()
+	m := metrics.NewMetricsWithRegistry(reg)
 
 	// Initialize S3 client (only if useClientCredentials is not enabled)
 	var s3Client s3.Client
