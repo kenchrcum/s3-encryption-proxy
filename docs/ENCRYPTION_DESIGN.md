@@ -296,10 +296,77 @@ const (
 )
 ```
 
+#### Compacted Metadata Keys (Base64URL Strategy)
+For providers with strict header limits, metadata keys are compacted using shorter aliases:
+
+```go
+// Compacted keys for base64url compaction strategy
+"x-amz-meta-e"     // encrypted flag
+"x-amz-meta-a"     // algorithm
+"x-amz-meta-s"     // key salt
+"x-amz-meta-i"     // IV/nonce
+"x-amz-meta-os"    // original size
+"x-amz-meta-oe"    // original ETag
+"x-amz-meta-c"     // chunked format flag
+"x-amz-meta-cs"    // chunk size
+"x-amz-meta-cc"    // chunk count
+"x-amz-meta-m"     // manifest
+"x-amz-meta-kv"    // key version
+"x-amz-meta-ce"    // compression enabled
+"x-amz-meta-ca"    // compression algorithm
+"x-amz-meta-cos"   // compression original size
+```
+
 ### Client Response Filtering
 - **Hide encryption metadata**: Don't expose internal encryption details
 - **Restore original metadata**: Show original Content-Type, ETag, etc.
 - **Size reporting**: Report original object size, not encrypted size
+
+## Provider-Specific Metadata Handling
+
+### Provider Profiles
+Different S3-compatible providers have varying limits on metadata headers:
+
+| Provider | User Metadata Limit | Total Header Limit | Compaction Strategy |
+|----------|-------------------|-------------------|-------------------|
+| AWS S3   | 2KB              | 8KB              | base64url         |
+| MinIO    | 2KB              | 8KB              | base64url         |
+| Wasabi   | 2KB              | 8KB              | base64url         |
+| Hetzner  | 2KB              | 8KB              | base64url         |
+| Default  | 2KB              | 8KB              | none (backward compatibility) |
+
+### Metadata Compaction Strategies
+
+#### None Strategy (Default)
+- Uses full metadata keys as documented above
+- No size optimization
+- Maintains backward compatibility
+
+#### Base64URL Strategy
+- Compacts metadata keys to shorter aliases
+- Uses base64url encoding for binary values
+- Reduces header size by ~40-50%
+- Automatically expands metadata during decryption
+
+### Metadata Size Estimation
+Current encryption metadata overhead (uncompacted):
+- **16 metadata keys**: ~525 bytes for key names
+- **Value data**: ~355 bytes (salts, IVs, sizes, etc.)
+- **Total**: ~880 bytes
+
+With compaction:
+- **16 metadata keys**: ~225 bytes for compacted key names
+- **Value data**: ~355 bytes (same)
+- **Total**: ~580 bytes (34% reduction)
+
+### Configuration
+```go
+// Enable compaction for AWS S3
+engine, err := crypto.NewEngineWithProvider(password, nil, "", nil, "aws")
+
+// Use default (no compaction) for backward compatibility
+engine, err := crypto.NewEngine(password)
+```
 
 ## Compression Integration
 
@@ -413,6 +480,7 @@ type CompressionMetadata struct {
 - Multiple algorithm support
 - KMS integration interfaces
 - Key rotation support
+- **Metadata compaction for provider limits (✓ implemented)**
 
 ### Phase 4: Enterprise Features
 - Audit logging

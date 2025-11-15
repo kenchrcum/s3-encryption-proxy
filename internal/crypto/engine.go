@@ -61,6 +61,9 @@ type engine struct {
 	// Chunked encryption settings
 	chunkedMode bool // Enable chunked/streaming encryption mode
 	chunkSize    int  // Size of each encryption chunk (default: DefaultChunkSize)
+	// Provider and compaction settings
+	providerProfile *ProviderProfile
+	compactor       *MetadataCompactor
 }
 
 // NewEngine creates a new encryption engine with the given password.
@@ -78,11 +81,21 @@ func NewEngineWithCompression(password string, compressionEngine CompressionEngi
 
 // NewEngineWithOptions creates a new encryption engine with full options.
 func NewEngineWithOptions(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string) (EncryptionEngine, error) {
-	return NewEngineWithChunking(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, true, DefaultChunkSize)
+	return NewEngineWithProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, "default")
+}
+
+// NewEngineWithProvider creates a new encryption engine with provider-specific settings.
+func NewEngineWithProvider(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, provider string) (EncryptionEngine, error) {
+	return NewEngineWithChunkingAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, false, DefaultChunkSize, provider)
 }
 
 // NewEngineWithChunking creates a new encryption engine with chunked mode support.
 func NewEngineWithChunking(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int) (EncryptionEngine, error) {
+	return NewEngineWithChunkingAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, chunkedMode, chunkSize, "default")
+}
+
+// NewEngineWithChunkingAndProvider creates a new encryption engine with chunked mode and provider support.
+func NewEngineWithChunkingAndProvider(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, chunkedMode bool, chunkSize int, provider string) (EncryptionEngine, error) {
 	if password == "" {
 		return nil, fmt.Errorf("encryption password cannot be empty")
 	}
@@ -95,7 +108,7 @@ func NewEngineWithChunking(password string, compressionEngine CompressionEngine,
 	if preferredAlgorithm == "" {
 		preferredAlgorithm = AlgorithmAES256GCM
 	}
-	
+
 	if len(supportedAlgorithms) == 0 {
 		supportedAlgorithms = []string{AlgorithmAES256GCM, AlgorithmChaCha20Poly1305}
 	}
@@ -116,6 +129,10 @@ func NewEngineWithChunking(password string, compressionEngine CompressionEngine,
 		chunkSize = MaxChunkSize
 	}
 
+	// Get provider profile and create compactor
+	profile := GetProviderProfile(provider)
+	compactor := NewMetadataCompactor(profile)
+
 	// Log hardware acceleration info
 	if HasAESHardwareSupport() {
 		// Hardware acceleration is available (Go's crypto automatically uses it)
@@ -129,12 +146,19 @@ func NewEngineWithChunking(password string, compressionEngine CompressionEngine,
 		supportedAlgorithms: supportedAlgorithms,
 		chunkedMode:         chunkedMode,
 		chunkSize:            chunkSize,
+		providerProfile:     profile,
+		compactor:           compactor,
 	}, nil
 }
 
 // NewEngineWithResolver creates a new encryption engine with a key resolver for rotation support.
 func NewEngineWithResolver(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool)) (EncryptionEngine, error) {
-    eng, err := NewEngineWithOptions(password, compressionEngine, preferredAlgorithm, supportedAlgorithms)
+    return NewEngineWithResolverAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, resolver, "default")
+}
+
+// NewEngineWithResolverAndProvider creates a new encryption engine with a key resolver and provider support.
+func NewEngineWithResolverAndProvider(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool), provider string) (EncryptionEngine, error) {
+    eng, err := NewEngineWithProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, provider)
     if err != nil {
         return nil, err
     }
@@ -346,7 +370,13 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// Note: Authentication tag is included in the ciphertext by GCM.Seal
 
-	return encryptedReader, encMetadata, nil
+	// Compact metadata according to provider profile
+	compactedMetadata, err := e.compactor.CompactMetadata(encMetadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to compact metadata: %w", err)
+	}
+
+	return encryptedReader, compactedMetadata, nil
 }
 
 // Decrypt decrypts data from the reader using the provided metadata
@@ -357,26 +387,32 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		return reader, metadata, nil
 	}
 
+	// Expand compacted metadata first
+	expandedMetadata, err := e.compactor.ExpandMetadata(metadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to expand metadata: %w", err)
+	}
+
 	// Check if this is chunked format
-	if isChunkedFormat(metadata) {
-		return e.decryptChunked(reader, metadata)
+	if isChunkedFormat(expandedMetadata) {
+		return e.decryptChunked(reader, expandedMetadata)
 	}
 
 	// Legacy buffered mode for backward compatibility
 
-	// Extract encryption parameters from metadata
-	salt, err := decodeBase64(metadata[MetaKeySalt])
+	// Extract encryption parameters from expanded metadata
+	salt, err := decodeBase64(expandedMetadata[MetaKeySalt])
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode salt: %w", err)
 	}
 
-	iv, err := decodeBase64(metadata[MetaIV])
+	iv, err := decodeBase64(expandedMetadata[MetaIV])
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode IV: %w", err)
 	}
 
 	// Get algorithm from metadata (default to AES-GCM for backward compatibility)
-	algorithm := metadata[MetaAlgorithm]
+	algorithm := expandedMetadata[MetaAlgorithm]
 	if algorithm == "" {
 		algorithm = AlgorithmAES256GCM
 	}
@@ -421,11 +457,11 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
         return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
     }
 
-    // Build AAD from metadata
+    // Build AAD from expanded metadata
     aad := buildAAD(algorithm, salt, iv, map[string]string{
-        MetaKeyVersion:  metadata[MetaKeyVersion],
-        MetaOriginalSize: metadata[MetaOriginalSize],
-        "Content-Type":  metadata["Content-Type"],
+        MetaKeyVersion:  expandedMetadata[MetaKeyVersion],
+        MetaOriginalSize: expandedMetadata[MetaOriginalSize],
+        "Content-Type":  expandedMetadata["Content-Type"],
     })
 
     // Attempt decrypt with current key and AAD
@@ -440,7 +476,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
     // If still failing and keyResolver available with key version, try resolved password
     if openErr != nil && e.keyResolver != nil {
-        if kvStr, ok := metadata[MetaKeyVersion]; ok && kvStr != "" {
+        if kvStr, ok := expandedMetadata[MetaKeyVersion]; ok && kvStr != "" {
             // parse version
             var ver int
             if _, perr := fmt.Sscanf(kvStr, "%d", &ver); perr == nil {
@@ -481,7 +517,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	// Apply decompression if compression was used
 	var finalReader io.Reader = bytes.NewReader(decryptedData)
 	if e.compressionEngine != nil {
-		decompressedReader, err := e.compressionEngine.Decompress(bytes.NewReader(decryptedData), metadata)
+		decompressedReader, err := e.compressionEngine.Decompress(bytes.NewReader(decryptedData), expandedMetadata)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to decompress data: %w", err)
 		}
@@ -490,7 +526,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// Prepare decrypted metadata (remove encryption and compression markers)
 	decMetadata := make(map[string]string)
-	for k, v := range metadata {
+	for k, v := range expandedMetadata {
 		// Skip encryption-related and compression-related metadata
 		if isEncryptionMetadata(k) || isCompressionMetadata(k) {
 			continue
@@ -499,12 +535,12 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 
 	// Restore original size if available
-	if originalSize, ok := metadata[MetaOriginalSize]; ok {
+	if originalSize, ok := expandedMetadata[MetaOriginalSize]; ok {
 		decMetadata["Content-Length"] = originalSize
 	}
 
 	// Restore original ETag if available
-	if originalETag, ok := metadata[MetaOriginalETag]; ok {
+	if originalETag, ok := expandedMetadata[MetaOriginalETag]; ok {
 		decMetadata["ETag"] = originalETag
 	}
 
@@ -601,7 +637,13 @@ if metadata != nil {
 		encMetadata[MetaKeyVersion] = kv
 	}
 
-	return chunkedReader, encMetadata, nil
+	// Compact metadata according to provider profile
+	compactedMetadata, err := e.compactor.CompactMetadata(encMetadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to compact metadata: %w", err)
+	}
+
+	return chunkedReader, compactedMetadata, nil
 }
 
 // decryptChunked implements streaming chunked decryption.
@@ -711,13 +753,19 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 		return nil, nil, fmt.Errorf("object is not encrypted")
 	}
 
+	// Expand compacted metadata first
+	expandedMetadata, err := e.compactor.ExpandMetadata(metadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to expand metadata: %w", err)
+	}
+
 	// Only supports chunked format for range optimization
-	if !isChunkedFormat(metadata) {
+	if !isChunkedFormat(expandedMetadata) {
 		return nil, nil, fmt.Errorf("range optimization only supported for chunked format")
 	}
 
 	// Get plaintext size for validation
-	plaintextSize, err := GetPlaintextSizeFromMetadata(metadata)
+	plaintextSize, err := GetPlaintextSizeFromMetadata(expandedMetadata)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get plaintext size: %w", err)
 	}
@@ -728,24 +776,24 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 	}
 
 	// Load manifest
-	manifest, err := loadManifestFromMetadata(metadata)
+	manifest, err := loadManifestFromMetadata(expandedMetadata)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to load manifest: %w", err)
 	}
 
 	// Extract encryption parameters
-	salt, err := decodeBase64(metadata[MetaKeySalt])
+	salt, err := decodeBase64(expandedMetadata[MetaKeySalt])
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode salt: %w", err)
 	}
 
-	baseIV, err := decodeBase64(metadata[MetaIV])
+	baseIV, err := decodeBase64(expandedMetadata[MetaIV])
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode base IV: %w", err)
 	}
 
 	// Get algorithm from metadata
-	algorithm := metadata[MetaAlgorithm]
+	algorithm := expandedMetadata[MetaAlgorithm]
 	if algorithm == "" {
 		algorithm = AlgorithmAES256GCM
 	}
@@ -792,7 +840,7 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 
 	// Prepare decrypted metadata
 	decMetadata := make(map[string]string)
-	for k, v := range metadata {
+	for k, v := range expandedMetadata {
 		if isEncryptionMetadata(k) {
 			continue
 		}
@@ -812,8 +860,17 @@ func (e *engine) IsEncrypted(metadata map[string]string) bool {
 		return false
 	}
 
-	encrypted, ok := metadata[MetaEncrypted]
-	return ok && encrypted == "true"
+	// Check for full key first
+	if encrypted, ok := metadata[MetaEncrypted]; ok && encrypted == "true" {
+		return true
+	}
+
+	// Check for compacted key
+	if encrypted, ok := metadata["x-amz-meta-e"]; ok && encrypted == "true" {
+		return true
+	}
+
+	return false
 }
 
 // computeETag computes the ETag (MD5 hash) for the given data.
