@@ -299,9 +299,9 @@ func testMultipartUploadFlow(t *testing.T, client *http.Client, gatewayAddr, buc
 		data       []byte
 		etag       string
 	}{
-		{1, bytes.Repeat([]byte("a"), 5*1024*1024), ""}, // 5MB - meets MinIO minimum
-		{2, []byte("part 2 data - smaller part"), ""},
-		{3, bytes.Repeat([]byte("c"), 1024*1024), ""},   // 1MB
+		{1, bytes.Repeat([]byte("a"), 10*1024*1024), ""}, // 10MB
+		{2, bytes.Repeat([]byte("b"), 10*1024*1024), ""}, // 10MB
+		{3, bytes.Repeat([]byte("c"), 10*1024*1024), ""}, // 10MB
 	}
 
 	for i, part := range parts {

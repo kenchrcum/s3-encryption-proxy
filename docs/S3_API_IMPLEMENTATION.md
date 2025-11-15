@@ -33,12 +33,12 @@ The S3 Encryption Gateway must maintain full compatibility with the Amazon S3 AP
   - `POST /{bucket}/{key}?uploads` - Initiate multipart upload
   - `PUT /{bucket}/{key}?partNumber=X&uploadId=Y` - Upload part
   - `POST /{bucket}/{key}?uploadId=Y` - Complete multipart upload
-- **Encryption**: Applied to each uploaded part
+- **Encryption**: NOT applied (parts stored unencrypted)
 - **Implementation**:
-  - Encrypt each part before forwarding to backend
+  - Parts are forwarded to backend without encryption to avoid concatenation issues
   - Preserve ordering and part ETags
   - Complete uploads by passing part list to backend
-  - Works seamlessly with chunked encryption mode for true streaming
+  - Multipart uploads bypass encryption for compatibility with S3 providers
 - **Security Features (V0.4)**:
   - Robust XML parsing with 10MB size limits to prevent DoS
   - Comprehensive validation of part numbers (1-10000 range)

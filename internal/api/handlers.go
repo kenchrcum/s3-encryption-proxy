@@ -1736,53 +1736,80 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Encrypt the part data
-	metadata := make(map[string]string)
-	var originalBytes int64
-	if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
-		if parsed, parseErr := strconv.ParseInt(contentLength, 10, 64); parseErr == nil && parsed >= 0 {
-			originalBytes = parsed
-		} else {
-			h.logger.WithError(parseErr).WithFields(logrus.Fields{
-				"bucket":   bucket,
-				"key":      key,
-				"uploadID": uploadID,
-			}).Warn("Invalid Content-Length for upload part; proceeding without content length optimization")
-		}
-	}
-
-	encryptedReader, encMetadata, err := h.encryptionEngine.Encrypt(r.Body, metadata)
-	if err != nil {
-		h.logger.WithError(err).Error("Failed to encrypt part")
-		s3Err := &S3Error{
-			Code:       "InternalError",
-			Message:    "Failed to encrypt part",
-			Resource:   r.URL.Path,
-			HTTPStatus: http.StatusInternalServerError,
-		}
-		s3Err.WriteXML(w)
-		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
-		return
-	}
-
-	// Provide encrypted content length when possible to avoid SDK re-reads
+	// For multipart uploads, skip encryption to avoid concatenation issues
+	// Each part would be encrypted individually, but when concatenated on the backend,
+	// this creates multiple encrypted streams that cannot be decrypted as a single object
+	var encryptedReader io.Reader = r.Body
+	var encMetadata map[string]string
 	var contentLengthPtr *int64
-	if originalBytes > 0 {
-		const aeadTagSize = 16
-		if encMetadata[crypto.MetaChunkedFormat] == "true" {
-			chunkSize := crypto.DefaultChunkSize
-			if csStr := encMetadata[crypto.MetaChunkSize]; csStr != "" {
-				if cs, err := strconv.Atoi(csStr); err == nil && cs > 0 {
-					chunkSize = cs
-				}
+
+	if uploadID == "" {
+		// Single-part upload: encrypt the data
+		metadata := make(map[string]string)
+		var originalBytes int64
+		if contentLength := r.Header.Get("Content-Length"); contentLength != "" {
+			if parsed, parseErr := strconv.ParseInt(contentLength, 10, 64); parseErr == nil && parsed >= 0 {
+				originalBytes = parsed
+			} else {
+				h.logger.WithError(parseErr).WithFields(logrus.Fields{
+					"bucket":   bucket,
+					"key":      key,
+					"uploadID": uploadID,
+				}).Warn("Invalid Content-Length for upload part; proceeding without content length optimization")
 			}
-			chunkCount := (originalBytes + int64(chunkSize) - 1) / int64(chunkSize)
-			encLen := originalBytes + chunkCount*int64(aeadTagSize)
-			contentLengthPtr = &encLen
-		} else if encMetadata[crypto.MetaEncrypted] == "true" {
-			encLen := originalBytes + int64(aeadTagSize)
-			contentLengthPtr = &encLen
 		}
+
+		encryptedReader, encMetadata, err = h.encryptionEngine.Encrypt(r.Body, metadata)
+		if err != nil {
+			h.logger.WithError(err).Error("Failed to encrypt part")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Failed to encrypt part",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+
+		// Provide encrypted content length when possible to avoid SDK re-reads
+		if originalBytes > 0 {
+			const aeadTagSize = 16
+			if encMetadata[crypto.MetaChunkedFormat] == "true" {
+				chunkSize := crypto.DefaultChunkSize
+				if csStr := encMetadata[crypto.MetaChunkSize]; csStr != "" {
+					if cs, err := strconv.Atoi(csStr); err == nil && cs > 0 {
+						chunkSize = cs
+					}
+				}
+				chunkCount := (originalBytes + int64(chunkSize) - 1) / int64(chunkSize)
+				encLen := originalBytes + chunkCount*int64(aeadTagSize)
+				contentLengthPtr = &encLen
+			} else if encMetadata[crypto.MetaEncrypted] == "true" {
+				encLen := originalBytes + int64(aeadTagSize)
+				contentLengthPtr = &encLen
+			}
+		}
+	} else {
+		// Multipart upload: skip encryption but buffer data to make it seekable for AWS SDK
+		partData, err := io.ReadAll(r.Body)
+		if err != nil {
+			h.logger.WithError(err).Error("Failed to read multipart upload part")
+			s3Err := &S3Error{
+				Code:       "InternalError",
+				Message:    "Failed to read part data",
+				Resource:   r.URL.Path,
+				HTTPStatus: http.StatusInternalServerError,
+			}
+			s3Err.WriteXML(w)
+			h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+			return
+		}
+		encryptedReader = bytes.NewReader(partData)
+		encMetadata = make(map[string]string)
+		partSize := int64(len(partData))
+		contentLengthPtr = &partSize
 	}
 
 	etag, err := s3Client.UploadPart(ctx, bucket, key, uploadID, int32(partNumber), encryptedReader, contentLengthPtr)

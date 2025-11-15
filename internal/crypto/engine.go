@@ -313,7 +313,7 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 	if len(key) != keySize {
 		// Trim or pad key to required size
-		adjustedKey := e.bufferPool.Get32()
+		adjustedKey := make([]byte, keySize)
 		copy(adjustedKey, key)
 		if len(key) < keySize {
 			// Pad with PBKDF2 of original key (simple approach)
@@ -321,7 +321,6 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		}
 		zeroBytes(key)
 		key = adjustedKey
-		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
 	}
 
 	// Create cipher using selected algorithm
@@ -769,8 +768,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 
 	// Create object format: [metadata_length][metadata_json][chunked_encrypted_data]
 	metadataLen := uint32(len(metadataJSON))
-	metadataLenBytes := e.bufferPool.Get4()
-	defer e.bufferPool.Put4(metadataLenBytes) // Return to pool after use
+	metadataLenBytes := make([]byte, 4)
 	metadataLenBytes[0] = byte(metadataLen >> 24)
 	metadataLenBytes[1] = byte(metadataLen >> 16)
 	metadataLenBytes[2] = byte(metadataLen >> 8)
@@ -1118,8 +1116,7 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 
 	// Create object format: [metadata_length][metadata_json][compressed_data]
 	metadataLen := uint32(len(metadataJSON))
-	metadataLenBytes := e.bufferPool.Get4() // 4 bytes for length
-	defer e.bufferPool.Put4(metadataLenBytes) // Return to pool after use
+	metadataLenBytes := make([]byte, 4) // 4 bytes for length
 	metadataLenBytes[0] = byte(metadataLen >> 24)
 	metadataLenBytes[1] = byte(metadataLen >> 16)
 	metadataLenBytes[2] = byte(metadataLen >> 8)
