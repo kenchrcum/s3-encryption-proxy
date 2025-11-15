@@ -14,6 +14,7 @@ A production-ready HTTP proxy that provides transparent client-side encryption f
 - **Client-Side Encryption**: Data is encrypted before transmission to backend storage, ensuring end-to-end security
 - **Production Features**: Comprehensive monitoring, health checks, metrics, TLS/HTTPS, rate limiting, and Kubernetes-ready deployment
 - **Streaming Support**: Efficient chunked encryption for large files with optimized range request handling
+- **Object Size Support**: Handles objects up to provider limits (AWS S3: 5TB, MinIO: configurable)
 - **Optional Compression**: Configurable compression before encryption to reduce storage costs
 
 ## Architecture
@@ -386,6 +387,15 @@ rate_limit:
   - Consider using a different encryption strategy for large files
 
 For encrypted multipart uploads, implement encryption in your application or S3 client before sending data to the gateway.
+
+### Large File Handling
+
+For files larger than S3 object size limits (AWS S3: 5TB, other providers vary):
+
+- **Split objects are encrypted correctly**: When large files are split into multiple objects by the client, each object is encrypted individually
+- **Naming convention**: Use client-side splitting with naming like `file.part1`, `file.part2`, etc.
+- **Encryption consistency**: Each split object gets its own encryption parameters (salt, IV) but maintains the same security guarantees
+- **Multipart within splits**: If individual split objects still require multipart uploads, those parts are not encrypted (same limitation as above)
 
 ### Encryption Details
 
