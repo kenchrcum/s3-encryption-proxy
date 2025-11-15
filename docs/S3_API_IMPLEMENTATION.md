@@ -39,6 +39,13 @@ The S3 Encryption Gateway must maintain full compatibility with the Amazon S3 AP
   - Preserve ordering and part ETags
   - Complete uploads by passing part list to backend
   - Works seamlessly with chunked encryption mode for true streaming
+- **Security Features (V0.4)**:
+  - Robust XML parsing with 10MB size limits to prevent DoS
+  - Comprehensive validation of part numbers (1-10000 range)
+  - ETag format validation with proper quoting requirements
+  - Duplicate part number detection and rejection
+  - Fuzz-tested XML parser for edge case handling
+  - Provider interoperability testing framework
 
 #### PUT Object Copy
 - **Endpoint**: `PUT /{bucket}/{key}?x-amz-copy-source=...`
