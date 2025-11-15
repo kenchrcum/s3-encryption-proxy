@@ -359,6 +359,38 @@ With compaction:
 - **Value data**: ~355 bytes (same)
 - **Total**: ~580 bytes (34% reduction)
 
+### Fallback Storage Strategy
+When metadata exceeds provider header limits even after compaction, the system automatically falls back to storing full metadata in the object body:
+
+#### Fallback Format
+```
+Encrypted Object = AES-GCM([metadata_length][metadata_json][data])
+```
+
+Where:
+- `metadata_length`: 4-byte big-endian integer
+- `metadata_json`: Full metadata as JSON
+- `data`: Original data (optionally compressed)
+
+#### Header Metadata (Minimal)
+Only essential encryption parameters are stored in headers:
+- `x-amz-meta-encrypted: true`
+- `x-amz-meta-encryption-fallback: true`
+- `x-amz-meta-encryption-algorithm: AES256-GCM`
+- `x-amz-meta-encryption-key-salt: <base64>`
+- `x-amz-meta-encryption-iv: <base64>`
+- `x-amz-meta-encryption-original-size: <size>`
+- `x-amz-meta-encryption-original-etag: <etag>`
+
+#### Automatic Detection
+The system automatically detects fallback mode during decryption and extracts full metadata from the object body. This is completely transparent to users.
+
+#### Performance Impact
+- **Header size**: Minimal (~200 bytes vs ~580 bytes compacted)
+- **Network overhead**: Metadata stored in object body adds small overhead
+- **Compatibility**: Works with all S3-compatible providers
+- **Security**: Full metadata remains encrypted and authenticated
+
 ### Configuration
 ```go
 // Enable compaction for AWS S3
@@ -481,6 +513,7 @@ type CompressionMetadata struct {
 - KMS integration interfaces
 - Key rotation support
 - **Metadata compaction for provider limits (✓ implemented)**
+- **Metadata fallback storage strategy (✓ implemented)**
 
 ### Phase 4: Enterprise Features
 - Audit logging

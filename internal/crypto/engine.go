@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -34,6 +35,10 @@ const (
 	MetaCompressionEnabled = "x-amz-meta-compression-enabled"
 	MetaCompressionAlgorithm = "x-amz-meta-compression-algorithm"
 	MetaCompressionOriginalSize = "x-amz-meta-compression-original-size"
+
+	// Fallback metadata storage keys
+	MetaFallbackMode     = "x-amz-meta-encryption-fallback"
+	MetaFallbackPointer  = "x-amz-meta-encryption-fallback-ptr"
 )
 
 // EncryptionEngine provides encryption and decryption functionality.
@@ -370,6 +375,11 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// Note: Authentication tag is included in the ciphertext by GCM.Seal
 
+	// Check if we need fallback metadata storage
+	if e.needsMetadataFallback(encMetadata) {
+		return e.encryptWithMetadataFallback(plaintext, encMetadata, contentType, originalSize, originalETag)
+	}
+
 	// Compact metadata according to provider profile
 	compactedMetadata, err := e.compactor.CompactMetadata(encMetadata)
 	if err != nil {
@@ -385,6 +395,11 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	if !e.IsEncrypted(metadata) {
 		// Not encrypted, return as-is
 		return reader, metadata, nil
+	}
+
+	// Check if this is fallback mode (metadata stored in object body)
+	if e.isFallbackMode(metadata) {
+		return e.decryptWithMetadataFallback(reader, metadata)
 	}
 
 	// Expand compacted metadata first
@@ -549,6 +564,41 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 // encryptChunked implements streaming chunked encryption.
 func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+	// Read all data for chunked encryption to check metadata size
+	plaintext, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read plaintext for chunked encryption: %w", err)
+	}
+
+	// Extract content type and compute ETag
+	contentType := ""
+	if metadata != nil {
+		contentType = metadata["Content-Type"]
+	}
+	originalETag := computeETag(plaintext)
+	originalSize := int64(len(plaintext))
+
+	// Prepare encryption metadata to check size
+	encMetadata := make(map[string]string)
+	if metadata != nil {
+		for k, v := range metadata {
+			encMetadata[k] = v
+		}
+	}
+	// Add basic encryption markers for size check
+	encMetadata[MetaEncrypted] = "true"
+	encMetadata[MetaAlgorithm] = e.preferredAlgorithm
+	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
+	encMetadata[MetaOriginalETag] = originalETag
+	// Add chunked-specific metadata
+	encMetadata[MetaChunkedFormat] = "true"
+	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
+
+	// Check if we need fallback metadata storage
+	if e.needsMetadataFallback(encMetadata) {
+		return e.encryptChunkedWithMetadataFallback(plaintext, encMetadata, contentType, originalSize, originalETag)
+	}
+
 	// Determine algorithm to use
 	algorithm := e.preferredAlgorithm
 
@@ -593,7 +643,7 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 	aead := aeadCipher.(cipher.AEAD)
 
 	// Create chunked encrypt reader
-	chunkedReader, manifest := newChunkedEncryptReader(reader, aead, baseIV, e.chunkSize)
+	chunkedReader, manifest := newChunkedEncryptReader(bytes.NewReader(plaintext), aead, baseIV, e.chunkSize)
 
 	// Encode manifest for storage
 	manifestEncoded, err := encodeManifest(manifest)
@@ -601,14 +651,7 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 		return nil, nil, fmt.Errorf("failed to encode manifest: %w", err)
 	}
 
-// Extract original ETag for preservation
-originalETag := ""
-if metadata != nil {
-	originalETag = metadata["ETag"]
-}
-
 	// Prepare encryption metadata
-	encMetadata := make(map[string]string)
 	if metadata != nil {
 		// Copy original metadata
 		for k, v := range metadata {
@@ -624,10 +667,7 @@ if metadata != nil {
 	encMetadata[MetaIV] = encodeBase64(baseIV)
 	encMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	encMetadata[MetaManifest] = manifestEncoded
-	// Store original ETag for restoration
-	if originalETag != "" {
-		encMetadata[MetaOriginalETag] = originalETag
-	}
+	encMetadata[MetaOriginalETag] = originalETag
 	// Note: MetaChunkCount is NOT set here because manifest.ChunkCount is 0 at this point
 	// (it only gets incremented during encryption). ChunkCount can be calculated during
 	// decryption from the encrypted object size and chunk size, or from the manifest if needed.
@@ -644,6 +684,124 @@ if metadata != nil {
 	}
 
 	return chunkedReader, compactedMetadata, nil
+}
+
+// encryptChunkedWithMetadataFallback encrypts chunked data with metadata stored in object body
+func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetadata map[string]string, contentType string, originalSize int64, originalETag string) (io.Reader, map[string]string, error) {
+	// Generate encryption parameters
+	salt, err := e.generateSalt()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate salt: %w", err)
+	}
+
+	baseIV, err := e.generateNonce()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate base IV: %w", err)
+	}
+
+	algorithm := e.preferredAlgorithm
+
+	// Derive key
+	key, err := e.deriveKey(salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+	}
+	defer zeroBytes(key)
+
+	// Adjust key size for algorithm
+	keySize := aesKeySize
+	if algorithm == AlgorithmChaCha20Poly1305 {
+		keySize = chacha20KeySize
+	}
+	if len(key) != keySize {
+		adjustedKey := make([]byte, keySize)
+		copy(adjustedKey, key)
+		if len(key) < keySize {
+			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+		}
+		zeroBytes(key)
+		key = adjustedKey
+	}
+
+	// Create cipher
+	aeadCipher, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+	aead := aeadCipher.(cipher.AEAD)
+
+	// Create chunked encrypt reader for the plaintext
+	chunkedReader, manifest := newChunkedEncryptReader(bytes.NewReader(plaintext), aead, baseIV, e.chunkSize)
+
+	// Read the chunked encrypted data
+	chunkedData, err := io.ReadAll(chunkedReader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read chunked encrypted data: %w", err)
+	}
+
+	// Encode manifest
+	manifestEncoded, err := encodeManifest(manifest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode manifest: %w", err)
+	}
+
+	// Update metadata with chunked encryption info
+	fullMetadata[MetaChunkedFormat] = "true"
+	fullMetadata[MetaAlgorithm] = algorithm
+	fullMetadata[MetaKeySalt] = encodeBase64(salt)
+	fullMetadata[MetaIV] = encodeBase64(baseIV)
+	fullMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
+	fullMetadata[MetaManifest] = manifestEncoded
+	fullMetadata[MetaOriginalETag] = originalETag
+
+	// Serialize full metadata to JSON
+	metadataJSON, err := encodeMetadataToJSON(fullMetadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode metadata: %w", err)
+	}
+
+	// Create object format: [metadata_length][metadata_json][chunked_encrypted_data]
+	metadataLen := uint32(len(metadataJSON))
+	metadataLenBytes := make([]byte, 4)
+	metadataLenBytes[0] = byte(metadataLen >> 24)
+	metadataLenBytes[1] = byte(metadataLen >> 16)
+	metadataLenBytes[2] = byte(metadataLen >> 8)
+	metadataLenBytes[3] = byte(metadataLen)
+
+	// Prepare data to encrypt: metadata + chunked encrypted data
+	dataToEncrypt := make([]byte, 0, len(metadataLenBytes)+len(metadataJSON)+len(chunkedData))
+	dataToEncrypt = append(dataToEncrypt, metadataLenBytes...)
+	dataToEncrypt = append(dataToEncrypt, metadataJSON...)
+	dataToEncrypt = append(dataToEncrypt, chunkedData...)
+
+	// Build AAD for authentication
+	aad := buildAAD(algorithm, salt, baseIV, map[string]string{
+		"Content-Type": contentType,
+		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
+	})
+
+	// Encrypt the combined data
+	ciphertext := aead.Seal(nil, baseIV, dataToEncrypt, aad)
+
+	// Create minimal header metadata
+	minimalMetadata := map[string]string{
+		MetaEncrypted:    "true",
+		MetaFallbackMode: "true",
+		MetaAlgorithm:    algorithm,
+		MetaKeySalt:      encodeBase64(salt),
+		MetaIV:           encodeBase64(baseIV),
+		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
+		MetaOriginalETag: originalETag,
+	}
+
+	// Copy original user metadata
+	for k, v := range fullMetadata {
+		if !isEncryptionMetadata(k) && !isCompressionMetadata(k) {
+			minimalMetadata[k] = v
+		}
+	}
+
+	return bytes.NewReader(ciphertext), minimalMetadata, nil
 }
 
 // decryptChunked implements streaming chunked decryption.
@@ -854,6 +1012,280 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 	return rangeReader, decMetadata, nil
 }
 
+// needsMetadataFallback checks if metadata would overflow provider limits
+func (e *engine) needsMetadataFallback(metadata map[string]string) bool {
+	// Skip fallback check if provider has unlimited headers
+	if e.providerProfile.TotalHeaderLimit <= 0 {
+		return false
+	}
+
+	// Try compacting first
+	compacted, err := e.compactor.CompactMetadata(metadata)
+	if err != nil {
+		// If compaction fails, we definitely need fallback
+		return true
+	}
+
+	// Check if compacted metadata fits
+	return EstimateMetadataSize(compacted) > e.providerProfile.TotalHeaderLimit
+}
+
+// encryptWithMetadataFallback encrypts data with metadata stored in object body
+func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[string]string, contentType string, originalSize int64, originalETag string) (io.Reader, map[string]string, error) {
+	// Apply compression if enabled (same logic as normal encryption)
+	var dataToEncrypt io.Reader = bytes.NewReader(plaintext)
+	compressionMetadata := make(map[string]string)
+	if e.compressionEngine != nil {
+		compressedReader, compMeta, err := e.compressionEngine.Compress(bytes.NewReader(plaintext), contentType, originalSize)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to compress data: %w", err)
+		}
+		if compMeta != nil {
+			// Compression was applied and was beneficial
+			compressionMetadata = compMeta
+			dataToEncrypt = compressedReader
+			// Read compressed data
+			compressedData, err := io.ReadAll(compressedReader)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to read compressed data: %w", err)
+			}
+			dataToEncrypt = bytes.NewReader(compressedData)
+		}
+	}
+
+	// Merge compression metadata into full metadata
+	for k, v := range compressionMetadata {
+		fullMetadata[k] = v
+	}
+
+	// Generate encryption parameters
+	salt, err := e.generateSalt()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate salt: %w", err)
+	}
+
+	nonce, err := e.generateNonce()
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	algorithm := e.preferredAlgorithm
+
+	// Derive key
+	key, err := e.deriveKey(salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+	}
+	defer zeroBytes(key)
+
+	// Adjust key size for algorithm
+	keySize := aesKeySize
+	if algorithm == AlgorithmChaCha20Poly1305 {
+		keySize = chacha20KeySize
+	}
+	if len(key) != keySize {
+		adjustedKey := make([]byte, keySize)
+		copy(adjustedKey, key)
+		if len(key) < keySize {
+			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+		}
+		zeroBytes(key)
+		key = adjustedKey
+	}
+
+	// Create cipher
+	aeadCipher, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cipher for algorithm %s: %w", algorithm, err)
+	}
+
+	// Serialize full metadata to JSON
+	metadataJSON, err := encodeMetadataToJSON(fullMetadata)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to encode metadata: %w", err)
+	}
+
+	// Create object format: [metadata_length][metadata_json][compressed_data]
+	metadataLen := uint32(len(metadataJSON))
+	metadataLenBytes := make([]byte, 4) // 4 bytes for length
+	metadataLenBytes[0] = byte(metadataLen >> 24)
+	metadataLenBytes[1] = byte(metadataLen >> 16)
+	metadataLenBytes[2] = byte(metadataLen >> 8)
+	metadataLenBytes[3] = byte(metadataLen)
+
+	// Read the data to encrypt (may be compressed)
+	finalData, err := io.ReadAll(dataToEncrypt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read data for encryption: %w", err)
+	}
+
+	// Prepare data to encrypt: metadata + final data (compressed or original)
+	dataToEncryptFinal := make([]byte, 0, len(metadataLenBytes)+len(metadataJSON)+len(finalData))
+	dataToEncryptFinal = append(dataToEncryptFinal, metadataLenBytes...)
+	dataToEncryptFinal = append(dataToEncryptFinal, metadataJSON...)
+	dataToEncryptFinal = append(dataToEncryptFinal, finalData...)
+
+	// Build AAD for authentication
+	aad := buildAAD(algorithm, salt, nonce, map[string]string{
+		"Content-Type": contentType,
+		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
+	})
+
+	// Encrypt the combined data
+	ciphertext := aeadCipher.Seal(nil, nonce, dataToEncryptFinal, aad)
+
+	// Create minimal header metadata
+	minimalMetadata := map[string]string{
+		MetaEncrypted:       "true",
+		MetaFallbackMode:    "true",
+		MetaAlgorithm:       algorithm,
+		MetaKeySalt:         encodeBase64(salt),
+		MetaIV:              encodeBase64(nonce),
+		MetaOriginalSize:    fmt.Sprintf("%d", originalSize),
+		MetaOriginalETag:    originalETag,
+	}
+
+	// Copy original user metadata
+	for k, v := range fullMetadata {
+		if !isEncryptionMetadata(k) && !isCompressionMetadata(k) {
+			minimalMetadata[k] = v
+		}
+	}
+
+	return bytes.NewReader(ciphertext), minimalMetadata, nil
+}
+
+// isFallbackMode checks if the metadata indicates fallback mode
+func (e *engine) isFallbackMode(metadata map[string]string) bool {
+	fallback, ok := metadata[MetaFallbackMode]
+	return ok && fallback == "true"
+}
+
+// decryptWithMetadataFallback decrypts data with metadata stored in object body
+func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+	// Extract encryption parameters from header metadata
+	salt, err := decodeBase64(metadata[MetaKeySalt])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode salt: %w", err)
+	}
+
+	iv, err := decodeBase64(metadata[MetaIV])
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode IV: %w", err)
+	}
+
+	algorithm := metadata[MetaAlgorithm]
+	if algorithm == "" {
+		algorithm = AlgorithmAES256GCM
+	}
+
+	// Verify algorithm is supported
+	if !isAlgorithmSupported(algorithm, e.supportedAlgorithms) {
+		return nil, nil, fmt.Errorf("unsupported algorithm %s (not in supported list)", algorithm)
+	}
+
+	// Derive key
+	key, err := e.deriveKey(salt)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+	}
+	defer zeroBytes(key)
+
+	// Adjust key size for algorithm
+	keySize := aesKeySize
+	if algorithm == AlgorithmChaCha20Poly1305 {
+		keySize = chacha20KeySize
+	}
+	if len(key) != keySize {
+		adjustedKey := make([]byte, keySize)
+		copy(adjustedKey, key)
+		if len(key) < keySize {
+			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+		}
+		zeroBytes(key)
+		key = adjustedKey
+	}
+
+	// Create cipher
+	aeadCipher, err := createAEADCipher(algorithm, key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create cipher: %w", err)
+	}
+
+	// Read all encrypted data
+	ciphertext, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
+	}
+
+	// Build AAD from available metadata
+	contentType := metadata["Content-Type"]
+	originalSize := metadata[MetaOriginalSize]
+	aad := buildAAD(algorithm, salt, iv, map[string]string{
+		"Content-Type": contentType,
+		MetaOriginalSize: originalSize,
+	})
+
+	// Decrypt the data
+	plaintext, err := aeadCipher.Open(nil, iv, ciphertext, aad)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decrypt data: %w", err)
+	}
+
+	// Parse the decrypted data: [metadata_length][metadata_json][actual_data]
+	if len(plaintext) < 4 {
+		return nil, nil, fmt.Errorf("encrypted data too short for fallback format")
+	}
+
+	metadataLen := uint32(plaintext[0])<<24 | uint32(plaintext[1])<<16 | uint32(plaintext[2])<<8 | uint32(plaintext[3])
+	if metadataLen > uint32(len(plaintext)-4) {
+		return nil, nil, fmt.Errorf("invalid metadata length in fallback format")
+	}
+
+	metadataStart := 4
+	metadataEnd := metadataStart + int(metadataLen)
+	metadataJSON := plaintext[metadataStart:metadataEnd]
+	actualData := plaintext[metadataEnd:]
+
+	// Parse metadata from JSON
+	fullMetadata, err := decodeMetadataFromJSON(metadataJSON)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to decode metadata from fallback: %w", err)
+	}
+
+	// Apply decompression if needed
+	var finalReader io.Reader = bytes.NewReader(actualData)
+	if e.compressionEngine != nil {
+		decompressedReader, err := e.compressionEngine.Decompress(bytes.NewReader(actualData), fullMetadata)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decompress data: %w", err)
+		}
+		finalReader = decompressedReader
+	}
+
+	// Prepare decrypted metadata (remove encryption and compression markers)
+	decMetadata := make(map[string]string)
+	for k, v := range fullMetadata {
+		// Skip encryption-related and compression-related metadata
+		if isEncryptionMetadata(k) || isCompressionMetadata(k) {
+			continue
+		}
+		decMetadata[k] = v
+	}
+
+	// Restore original size if available
+	if originalSize, ok := fullMetadata[MetaOriginalSize]; ok {
+		decMetadata["Content-Length"] = originalSize
+	}
+
+	// Restore original ETag if available
+	if originalETag, ok := fullMetadata[MetaOriginalETag]; ok {
+		decMetadata["ETag"] = originalETag
+	}
+
+	return finalReader, decMetadata, nil
+}
+
 // IsEncrypted checks if the metadata indicates the object is encrypted.
 func (e *engine) IsEncrypted(metadata map[string]string) bool {
 	if metadata == nil {
@@ -893,7 +1325,9 @@ func isEncryptionMetadata(key string) bool {
 		key == MetaChunkSize ||
 		key == MetaChunkCount ||
 		key == MetaManifest ||
-		key == MetaKeyVersion
+		key == MetaKeyVersion ||
+		key == MetaFallbackMode ||
+		key == MetaFallbackPointer
 }
 
 // isCompressionMetadata checks if a metadata key is related to compression.
@@ -936,4 +1370,16 @@ func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+// encodeMetadataToJSON encodes metadata map to JSON bytes
+func encodeMetadataToJSON(metadata map[string]string) ([]byte, error) {
+	return json.Marshal(metadata)
+}
+
+// decodeMetadataFromJSON decodes JSON bytes to metadata map
+func decodeMetadataFromJSON(data []byte) (map[string]string, error) {
+	var metadata map[string]string
+	err := json.Unmarshal(data, &metadata)
+	return metadata, err
 }
