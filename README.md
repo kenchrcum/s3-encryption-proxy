@@ -1,6 +1,6 @@
 # S3 Encryption Gateway
 
-![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)
+![Version](https://img.shields.io/badge/version-0.3.10-blue.svg)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/s3-encryption-gateway)](https://artifacthub.io/packages/search?repo=s3-encryption-gateway)
 
@@ -376,18 +376,17 @@ rate_limit:
 
 ### Multipart Upload Encryption
 
-**✅ Multipart uploads are now fully supported and encrypted** using the chunked encryption format introduced in v0.4.
+**⚠️ Important Security Notice**: Multipart uploads are **not encrypted** by the S3 Encryption Gateway due to fundamental architectural limitations.
 
-- **How it works**: Large objects are encrypted in fixed-size chunks (64KB default) with independent authentication
-- **Security**: Each chunk has its own IV derived deterministically, maintaining security while enabling streaming
-- **Performance**: Optimized for range requests - only required chunks are fetched and decrypted
-- **Compatibility**: Works seamlessly with AWS S3, MinIO, Wasabi, Hetzner, and other S3-compatible providers
+- **Why not encrypted**: S3 concatenates multipart upload parts server-side. Encrypting each part individually creates multiple invalid encrypted streams when combined.
+- **Security impact**: Data uploaded via multipart operations is stored unencrypted on the S3 backend.
+- **Recommended alternatives**:
+  - Use client-side encryption before sending data to the gateway
+  - Encrypt files at the application level before upload
+  - Use single-part uploads for sensitive data
+  - Consider using a different encryption strategy for large files
 
-The gateway validates multipart upload requests with security measures including:
-- XML parsing with size limits (10MB max) to prevent DoS attacks
-- Part number validation (1-10000 range, no duplicates)
-- ETag format verification
-- XXE (XML External Entity) attack prevention
+For encrypted multipart uploads, implement encryption in your application or S3 client before sending data to the gateway.
 
 ### Large File Handling
 
@@ -400,20 +399,20 @@ For files larger than S3 object size limits (AWS S3: 5TB, other providers vary):
 
 ### Disabling Multipart Uploads
 
-Multipart uploads can be disabled if you prefer to enforce single-part uploads only:
+For maximum security, you can disable multipart uploads entirely:
 
 ```yaml
 server:
   disable_multipart_uploads: true  # Set via SERVER_DISABLE_MULTIPART_UPLOADS env var
 ```
 
-**When disabled:**
-- ✅ **All uploads use single-part encryption** (simpler security model)
+**When enabled:**
+- ✅ **All uploads are encrypted** (no unencrypted multipart data)
 - ❌ **Multipart uploads are rejected** with HTTP 501 Not Implemented
-- ✅ **All data remains fully encrypted**
-- ⚠️ **Large files must be split** into multiple single-part objects by the client
+- ✅ **Single-part uploads work normally**
+- ⚠️ **Large files must be split** into multiple single-part objects
 
-This provides a simpler security model but may impact performance for very large files. Since v0.4, multipart uploads are secure by default.
+This is a security vs. compatibility trade-off. Most S3 clients support single-part uploads for large files through automatic splitting.
 
 ### Encryption Details
 
@@ -421,7 +420,7 @@ This provides a simpler security model but may impact performance for very large
 - **Key Derivation**: PBKDF2 with 100,000+ iterations
 - **Encryption Mode**: Chunked encryption with per-chunk IVs for streaming support
 - **Range Requests**: Highly optimized - fetches only needed encrypted chunks (99.9%+ reduction in transfer/decryption)
-- **Multipart Support**: Full multipart upload encryption with security validation
+- **Multipart Limitation**: Multipart uploads bypass encryption due to S3 concatenation behavior
 
 ## Contributing
 

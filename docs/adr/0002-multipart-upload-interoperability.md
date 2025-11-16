@@ -1,11 +1,13 @@
-# ADR 0002: Multipart Upload Interoperability and Security
+# ADR 0002: Multipart Upload Security Validation and Interoperability
 
 ## Status
 Accepted
 
 ## Context
 
-The S3 Encryption Gateway must support multipart uploads to maintain S3 API compatibility for large object uploads. Multipart uploads are critical for:
+The S3 Encryption Gateway supports multipart uploads for S3 API compatibility, but **multipart uploads are not encrypted** due to fundamental architectural limitations. When multipart uploads are enabled, the gateway must handle them securely while ensuring users understand the security implications.
+
+Multipart uploads are critical for:
 - Large file uploads (>100MB) where single-part uploads may timeout
 - Resumable uploads that can recover from network failures
 - Parallel upload performance through concurrent part uploads
@@ -14,18 +16,20 @@ However, multipart uploads introduce security and compatibility challenges:
 - XML parsing vulnerabilities (XXE, DoS attacks)
 - Complex validation requirements for part ordering and ETags
 - Provider-specific differences in multipart behavior
+- **Security risk**: Unencrypted data storage when multipart uploads are used
 
 ## Problem Statement
 
-Multipart uploads involve complex XML parsing and validation. Without proper security measures, this creates attack vectors:
-- XML external entity (XXE) attacks
-- Denial of service through malformed XML
+Multipart uploads create multiple attack vectors and compatibility issues:
+- XML external entity (XXE) attacks on CompleteMultipartUpload requests
+- Denial of service through malformed or oversized XML payloads
 - Authentication bypass through part manipulation
 - Compatibility issues across S3 providers (AWS, MinIO, Wasabi, etc.)
+- **Critical**: Multipart uploads bypass encryption, storing data unencrypted
 
 ## Decision
 
-Implement secure XML parsing with comprehensive validation and provider-agnostic multipart upload handling.
+Implement comprehensive security validation for multipart uploads while maintaining clear security warnings and providing an option to disable multipart uploads entirely for maximum security.
 
 ### Key Design Decisions
 
@@ -55,6 +59,29 @@ Implement secure XML parsing with comprehensive validation and provider-agnostic
 - **Security**: Upload IDs remain opaque, no local state storage
 
 ## Implementation Details
+
+### Multipart Upload Encryption Limitation
+
+**Multipart uploads are not encrypted** due to S3's concatenation behavior:
+
+```go
+// For multipart uploads, skip encryption to avoid concatenation issues
+// Each part would be encrypted individually, but when concatenated on the backend,
+// this creates multiple encrypted streams that cannot be decrypted as a single object
+var encryptedReader io.Reader = r.Body  // Skip encryption for multipart
+```
+
+**Why this limitation exists:**
+- S3 concatenates multipart upload parts server-side without knowledge of encryption boundaries
+- Encrypting each part individually creates multiple encrypted streams
+- When concatenated, the result is not a valid encrypted object
+- Gateway cannot decrypt such concatenated encrypted streams
+
+**Security Implications:**
+- Multipart upload data is stored **unencrypted** on S3 backend
+- Only single-part uploads receive encryption
+- `disable_multipart_uploads` option ensures all data is encrypted
+- Clear documentation warnings about this limitation
 
 ### XML Parsing Security
 ```go
@@ -248,17 +275,22 @@ func translateError(err error, resource string) *S3Error {
 
 ## Alternatives Considered
 
-### Alternative 1: Disable Multipart Uploads
-- **Pros**: Simpler security model, reduced attack surface
+### Alternative 1: Encrypt Multipart Parts Individually
+- **Pros**: Would encrypt all data including multipart uploads
+- **Cons**: S3 concatenates parts server-side, creating invalid encrypted streams that cannot be decrypted
+- **Decision**: Rejected due to fundamental incompatibility with S3 multipart concatenation
+
+### Alternative 2: Client-side Multipart Reassembly
+- **Pros**: Could encrypt complete objects before multipart upload
+- **Cons**: Requires buffering entire objects in memory/network, defeats multipart purpose
+- **Decision**: Rejected due to memory and performance implications
+
+### Alternative 3: Disable Multipart Uploads Entirely
+- **Pros**: Simpler security model, all data guaranteed encrypted
 - **Cons**: Breaks compatibility for large uploads, poor user experience
-- **Decision**: Rejected due to S3 API compatibility requirements
+- **Decision**: Rejected due to S3 API compatibility requirements, but provided as optional security feature
 
-### Alternative 2: Client-side Multipart Assembly
-- **Pros**: Full control over multipart logic
-- **Cons**: Complex state management, increased memory usage
-- **Decision**: Rejected in favor of backend provider handling
-
-### Alternative 3: Custom Binary Protocol
+### Alternative 4: Custom Binary Protocol
 - **Pros**: Potentially more secure, smaller payload size
 - **Cons**: Not S3 compatible, requires client changes
 - **Decision**: Rejected due to S3 API compatibility requirements
