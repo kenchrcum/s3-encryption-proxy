@@ -34,6 +34,188 @@ var (
 	commit  = "unknown"
 )
 
+// ConfigChangeApplier holds references to components that can be updated during hot reload
+type ConfigChangeApplier struct {
+	logger        *logrus.Logger
+	tracerProvider *sdktrace.TracerProvider
+	RateLimiter   *middleware.RateLimiter
+	cache         cache.Cache
+	auditLogger   audit.Logger
+	config        *config.Config
+}
+
+// NewConfigChangeApplier creates a new applier for configuration changes
+func NewConfigChangeApplier(logger *logrus.Logger, tracerProvider *sdktrace.TracerProvider, rateLimiter *middleware.RateLimiter, cache cache.Cache, auditLogger audit.Logger, initialConfig *config.Config) *ConfigChangeApplier {
+	return &ConfigChangeApplier{
+		logger:        logger,
+		tracerProvider: tracerProvider,
+		RateLimiter:   rateLimiter,
+		cache:         cache,
+		auditLogger:   auditLogger,
+		config:        initialConfig,
+	}
+}
+
+// ApplyConfigChanges applies non-crypto configuration changes to running components
+func (a *ConfigChangeApplier) ApplyConfigChanges(oldConfig, newConfig *config.Config) error {
+	changes := []string{}
+
+	// Update log level
+	if oldConfig.LogLevel != newConfig.LogLevel {
+		level, err := logrus.ParseLevel(newConfig.LogLevel)
+		if err != nil {
+			a.logger.WithError(err).Warn("Invalid log level in reloaded config, keeping current level")
+		} else {
+			a.logger.SetLevel(level)
+			changes = append(changes, fmt.Sprintf("log_level: %s -> %s", oldConfig.LogLevel, newConfig.LogLevel))
+		}
+	}
+
+	// Update rate limiting
+	if oldConfig.RateLimit.Enabled != newConfig.RateLimit.Enabled ||
+		oldConfig.RateLimit.Limit != newConfig.RateLimit.Limit ||
+		oldConfig.RateLimit.Window != newConfig.RateLimit.Window {
+
+		if a.RateLimiter != nil {
+			a.RateLimiter.Stop()
+		}
+
+		if newConfig.RateLimit.Enabled {
+			a.RateLimiter = middleware.NewRateLimiter(
+				newConfig.RateLimit.Limit,
+				newConfig.RateLimit.Window,
+				a.logger,
+			)
+			changes = append(changes, fmt.Sprintf("rate_limit: enabled=%v, limit=%d, window=%v",
+				newConfig.RateLimit.Enabled, newConfig.RateLimit.Limit, newConfig.RateLimit.Window))
+		} else {
+			a.RateLimiter = nil
+			changes = append(changes, "rate_limit: disabled")
+		}
+	}
+
+	// Update cache settings
+	if oldConfig.Cache.Enabled != newConfig.Cache.Enabled ||
+		oldConfig.Cache.MaxSize != newConfig.Cache.MaxSize ||
+		oldConfig.Cache.MaxItems != newConfig.Cache.MaxItems ||
+		oldConfig.Cache.DefaultTTL != newConfig.Cache.DefaultTTL {
+
+		// Note: Cache reconfiguration is complex and may not be safe for existing entries
+		// For now, we'll log the change but not apply it
+		a.logger.WithFields(logrus.Fields{
+			"old_enabled": oldConfig.Cache.Enabled,
+			"new_enabled": newConfig.Cache.Enabled,
+			"old_max_size": oldConfig.Cache.MaxSize,
+			"new_max_size": newConfig.Cache.MaxSize,
+			"old_max_items": oldConfig.Cache.MaxItems,
+			"new_max_items": newConfig.Cache.MaxItems,
+			"old_ttl": oldConfig.Cache.DefaultTTL,
+			"new_ttl": newConfig.Cache.DefaultTTL,
+		}).Warn("Cache configuration changed - restart required for changes to take effect")
+
+		changes = append(changes, "cache: configuration changed (restart required)")
+	}
+
+	// Update audit settings
+	if oldConfig.Audit.Enabled != newConfig.Audit.Enabled ||
+		oldConfig.Audit.MaxEvents != newConfig.Audit.MaxEvents {
+
+		// Note: Changing audit settings during runtime is complex
+		// For now, we'll log the change but not apply it
+		a.logger.WithFields(logrus.Fields{
+			"old_enabled": oldConfig.Audit.Enabled,
+			"new_enabled": newConfig.Audit.Enabled,
+			"old_max_events": oldConfig.Audit.MaxEvents,
+			"new_max_events": newConfig.Audit.MaxEvents,
+		}).Warn("Audit configuration changed - restart required for changes to take effect")
+
+		changes = append(changes, "audit: configuration changed (restart required)")
+	}
+
+	// Update tracing settings
+	if oldConfig.Tracing.Enabled != newConfig.Tracing.Enabled ||
+		oldConfig.Tracing.ServiceName != newConfig.Tracing.ServiceName ||
+		oldConfig.Tracing.ServiceVersion != newConfig.Tracing.ServiceVersion ||
+		oldConfig.Tracing.Exporter != newConfig.Tracing.Exporter ||
+		oldConfig.Tracing.JaegerEndpoint != newConfig.Tracing.JaegerEndpoint ||
+		oldConfig.Tracing.OtlpEndpoint != newConfig.Tracing.OtlpEndpoint ||
+		oldConfig.Tracing.SamplingRatio != newConfig.Tracing.SamplingRatio ||
+		oldConfig.Tracing.RedactSensitive != newConfig.Tracing.RedactSensitive {
+
+		// Tracing reconfiguration is complex and may require restarting the tracer provider
+		a.logger.WithFields(logrus.Fields{
+			"old_enabled": oldConfig.Tracing.Enabled,
+			"new_enabled": newConfig.Tracing.Enabled,
+		}).Warn("Tracing configuration changed - restart required for changes to take effect")
+
+		changes = append(changes, "tracing: configuration changed (restart required)")
+	}
+
+	// Update proxied bucket
+	if oldConfig.ProxiedBucket != newConfig.ProxiedBucket {
+		a.logger.WithFields(logrus.Fields{
+			"old_bucket": oldConfig.ProxiedBucket,
+			"new_bucket": newConfig.ProxiedBucket,
+		}).Warn("Proxied bucket changed - restart required for changes to take effect")
+
+		changes = append(changes, fmt.Sprintf("proxied_bucket: %s -> %s (restart required)", oldConfig.ProxiedBucket, newConfig.ProxiedBucket))
+	}
+
+	// Update server timeouts (these require server restart, but we can log the change)
+	if oldConfig.Server.ReadTimeout != newConfig.Server.ReadTimeout ||
+		oldConfig.Server.WriteTimeout != newConfig.Server.WriteTimeout ||
+		oldConfig.Server.IdleTimeout != newConfig.Server.IdleTimeout ||
+		oldConfig.Server.ReadHeaderTimeout != newConfig.Server.ReadHeaderTimeout ||
+		oldConfig.Server.MaxHeaderBytes != newConfig.Server.MaxHeaderBytes ||
+		oldConfig.Server.DisableMultipartUploads != newConfig.Server.DisableMultipartUploads {
+
+		a.logger.WithFields(logrus.Fields{
+			"read_timeout": newConfig.Server.ReadTimeout,
+			"write_timeout": newConfig.Server.WriteTimeout,
+			"idle_timeout": newConfig.Server.IdleTimeout,
+		}).Warn("Server configuration changed - restart required for changes to take effect")
+
+		changes = append(changes, "server: timeouts/configuration changed (restart required)")
+	}
+
+	// Update logging configuration
+	if oldConfig.Logging.AccessLogFormat != newConfig.Logging.AccessLogFormat ||
+		len(oldConfig.Logging.RedactHeaders) != len(newConfig.Logging.RedactHeaders) {
+
+		// Check if redact headers changed
+		headersChanged := len(oldConfig.Logging.RedactHeaders) != len(newConfig.Logging.RedactHeaders)
+		if !headersChanged {
+			for i, header := range oldConfig.Logging.RedactHeaders {
+				if i >= len(newConfig.Logging.RedactHeaders) || header != newConfig.Logging.RedactHeaders[i] {
+					headersChanged = true
+					break
+				}
+			}
+		}
+
+		if oldConfig.Logging.AccessLogFormat != newConfig.Logging.AccessLogFormat || headersChanged {
+			a.logger.WithFields(logrus.Fields{
+				"old_format": oldConfig.Logging.AccessLogFormat,
+				"new_format": newConfig.Logging.AccessLogFormat,
+			}).Warn("Logging configuration changed - restart required for changes to take effect")
+
+			changes = append(changes, "logging: configuration changed (restart required)")
+		}
+	}
+
+	// Update the config reference
+	a.config = newConfig
+
+	// Log all changes
+	if len(changes) > 0 {
+		a.logger.WithField("changes", changes).Info("Configuration reloaded with changes")
+	} else {
+		a.logger.Info("Configuration reloaded (no changes detected)")
+	}
+
+	return nil
+}
+
 // InitTracing initializes OpenTelemetry tracing based on configuration
 func InitTracing(cfg config.TracingConfig, logger *logrus.Logger) (*sdktrace.TracerProvider, error) {
 	// Create resource with service information
@@ -318,6 +500,40 @@ func main() {
 	// Initialize API handler with Phase 5 features
 	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger, cfg)
 
+	// Initialize configuration hot-reload (only if config file is specified)
+	var configReloader *config.ConfigReloader
+	var configApplier *ConfigChangeApplier
+
+	if configPath != "" && configPath != "config.yaml" { // Only enable if explicit config file is provided
+		// Create config change applier
+		var rateLimiterPtr *middleware.RateLimiter
+		if cfg.RateLimit.Enabled {
+			rateLimiterPtr = middleware.NewRateLimiter(
+				cfg.RateLimit.Limit,
+				cfg.RateLimit.Window,
+				logger,
+			)
+			defer rateLimiterPtr.Stop()
+		}
+
+		configApplier = NewConfigChangeApplier(logger, tracerProvider, rateLimiterPtr, objectCache, auditLogger, cfg)
+
+		// Create and start config reloader
+		var err error
+		configReloader, err = config.NewConfigReloader(configPath, cfg, logger)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to initialize config reloader")
+		}
+
+		// Set the reload callback
+		configReloader.SetOnReloadCallback(configApplier.ApplyConfigChanges)
+
+		// Start config reloader in background
+		go configReloader.Start()
+
+		logger.WithField("config_file", configPath).Info("Configuration hot-reload enabled")
+	}
+
 	// Setup router
 	router := mux.NewRouter()
 
@@ -345,12 +561,18 @@ func main() {
 
 	// Add rate limiting if enabled
 	if cfg.RateLimit.Enabled {
-		rateLimiter := middleware.NewRateLimiter(
-			cfg.RateLimit.Limit,
-			cfg.RateLimit.Window,
-			logger,
-		)
-		defer rateLimiter.Stop()
+		// Use the rate limiter from config applier if hot-reload is enabled
+		var rateLimiter *middleware.RateLimiter
+		if configApplier != nil && configApplier.RateLimiter != nil {
+			rateLimiter = configApplier.RateLimiter
+		} else {
+			rateLimiter = middleware.NewRateLimiter(
+				cfg.RateLimit.Limit,
+				cfg.RateLimit.Window,
+				logger,
+			)
+			defer rateLimiter.Stop()
+		}
 		httpHandler = middleware.RateLimitMiddleware(rateLimiter)(httpHandler)
 		logger.WithFields(logrus.Fields{
 			"limit":  cfg.RateLimit.Limit,
@@ -394,6 +616,12 @@ func main() {
 	<-quit
 
 	logger.Info("Shutting down server...")
+
+	// Stop config reloader if enabled
+	if configReloader != nil {
+		configReloader.Stop()
+		logger.Info("Configuration reloader stopped")
+	}
 
 	// Graceful shutdown
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

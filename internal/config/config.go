@@ -3,10 +3,15 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
+	"github.com/sirupsen/logrus"
 	"gopkg.in/yaml.v3"
 )
 
@@ -484,4 +489,191 @@ func (c *Config) Validate() error {
     }
 
 	return nil
+}
+
+// ConfigReloader handles hot-reloading of non-crypto configuration settings.
+type ConfigReloader struct {
+	currentConfig *Config
+	configPath    string
+	logger        *logrus.Logger
+	watcher       *fsnotify.Watcher
+	signalChan    chan os.Signal
+	stopChan      chan struct{}
+	mu            sync.RWMutex
+	onReload      func(*Config, *Config) error // callback for applying config changes
+}
+
+// NewConfigReloader creates a new configuration reloader that watches for file changes
+// and SIGHUP signals to reload non-crypto configuration settings.
+func NewConfigReloader(configPath string, initialConfig *Config, logger *logrus.Logger) (*ConfigReloader, error) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create file watcher: %w", err)
+	}
+
+	if configPath != "" {
+		if err := watcher.Add(configPath); err != nil {
+			watcher.Close()
+			return nil, fmt.Errorf("failed to watch config file: %w", err)
+		}
+	}
+
+	reloader := &ConfigReloader{
+		currentConfig: initialConfig,
+		configPath:    configPath,
+		logger:        logger,
+		watcher:       watcher,
+		signalChan:    make(chan os.Signal, 1),
+		stopChan:      make(chan struct{}),
+	}
+
+	// Register for SIGHUP signal
+	signal.Notify(reloader.signalChan, syscall.SIGHUP)
+
+	return reloader, nil
+}
+
+// SetOnReloadCallback sets the callback function that will be called when configuration
+// is reloaded. The callback receives the old and new configs.
+func (r *ConfigReloader) SetOnReloadCallback(callback func(old, new *Config) error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onReload = callback
+}
+
+// Start begins watching for configuration changes. This method blocks until Stop() is called.
+func (r *ConfigReloader) Start() {
+	r.logger.Info("Configuration hot-reload enabled")
+
+	for {
+		select {
+		case <-r.stopChan:
+			r.logger.Info("Configuration reloader stopping")
+			return
+
+		case event, ok := <-r.watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Has(fsnotify.Write) && event.Name == r.configPath {
+				r.logger.Info("Configuration file changed, reloading...")
+				r.reloadConfig()
+
+			} else if event.Has(fsnotify.Remove) && event.Name == r.configPath {
+				r.logger.Warn("Configuration file removed, stopping file watch")
+				r.watcher.Remove(r.configPath)
+			}
+
+		case err, ok := <-r.watcher.Errors:
+			if !ok {
+				return
+			}
+			r.logger.WithError(err).Error("Configuration file watch error")
+
+		case sig := <-r.signalChan:
+			if sig == syscall.SIGHUP {
+				r.logger.Info("Received SIGHUP, reloading configuration...")
+				r.reloadConfig()
+			}
+		}
+	}
+}
+
+// Stop stops the configuration reloader.
+func (r *ConfigReloader) Stop() {
+	close(r.stopChan)
+	r.watcher.Close()
+	signal.Stop(r.signalChan)
+}
+
+// reloadConfig attempts to reload the configuration from disk.
+func (r *ConfigReloader) reloadConfig() {
+	newConfig, err := LoadConfig(r.configPath)
+	if err != nil {
+		r.logger.WithError(err).Error("Failed to reload configuration")
+		return
+	}
+
+	r.mu.RLock()
+	oldConfig := *r.currentConfig // Make a copy of the old config
+	r.mu.RUnlock()
+
+	// Validate that only safe fields have changed
+	if err := r.validateReloadSafety(&oldConfig, newConfig); err != nil {
+		r.logger.WithError(err).Error("Configuration reload rejected: unsafe changes detected")
+		return
+	}
+
+	// Apply the changes via callback
+	if r.onReload != nil {
+		if err := r.onReload(&oldConfig, newConfig); err != nil {
+			r.logger.WithError(err).Error("Failed to apply configuration changes")
+			return
+		}
+	}
+
+	// Update current config
+	r.mu.Lock()
+	r.currentConfig = newConfig
+	r.mu.Unlock()
+
+	r.logger.Info("Configuration reloaded successfully")
+}
+
+// validateReloadSafety ensures that only non-crypto settings have changed.
+func (r *ConfigReloader) validateReloadSafety(old, new *Config) error {
+	// Crypto settings that MUST NOT change during hot reload
+	if old.Encryption.Password != new.Encryption.Password {
+		return fmt.Errorf("encryption.password cannot be changed during hot reload")
+	}
+	if old.Encryption.KeyFile != new.Encryption.KeyFile {
+		return fmt.Errorf("encryption.key_file cannot be changed during hot reload")
+	}
+	if old.Encryption.KeyManager.Enabled != new.Encryption.KeyManager.Enabled {
+		return fmt.Errorf("encryption.key_manager.enabled cannot be changed during hot reload")
+	}
+	if old.Encryption.PreferredAlgorithm != new.Encryption.PreferredAlgorithm {
+		return fmt.Errorf("encryption.preferred_algorithm cannot be changed during hot reload")
+	}
+	if len(old.Encryption.SupportedAlgorithms) != len(new.Encryption.SupportedAlgorithms) {
+		return fmt.Errorf("encryption.supported_algorithms cannot be changed during hot reload")
+	}
+	for i, alg := range old.Encryption.SupportedAlgorithms {
+		if i >= len(new.Encryption.SupportedAlgorithms) || alg != new.Encryption.SupportedAlgorithms[i] {
+			return fmt.Errorf("encryption.supported_algorithms cannot be changed during hot reload")
+		}
+	}
+	if old.Encryption.ChunkedMode != new.Encryption.ChunkedMode {
+		return fmt.Errorf("encryption.chunked_mode cannot be changed during hot reload")
+	}
+	if old.Encryption.ChunkSize != new.Encryption.ChunkSize {
+		return fmt.Errorf("encryption.chunk_size cannot be changed during hot reload")
+	}
+
+	// Compression settings - changing these could affect existing encrypted data
+	if old.Compression.Enabled != new.Compression.Enabled {
+		return fmt.Errorf("compression.enabled cannot be changed during hot reload")
+	}
+	if old.Compression.Algorithm != new.Compression.Algorithm {
+		return fmt.Errorf("compression.algorithm cannot be changed during hot reload")
+	}
+	if old.Compression.Level != new.Compression.Level {
+		return fmt.Errorf("compression.level cannot be changed during hot reload")
+	}
+
+	// Backend settings that affect encryption/decryption compatibility
+	if old.Backend.Provider != new.Backend.Provider {
+		return fmt.Errorf("backend.provider cannot be changed during hot reload")
+	}
+
+	return nil
+}
+
+// GetCurrentConfig returns a copy of the current configuration.
+func (r *ConfigReloader) GetCurrentConfig() *Config {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	// Return a copy to prevent external modification
+	configCopy := *r.currentConfig
+	return &configCopy
 }
