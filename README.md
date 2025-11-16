@@ -397,6 +397,23 @@ For files larger than S3 object size limits (AWS S3: 5TB, other providers vary):
 - **Encryption consistency**: Each split object gets its own encryption parameters (salt, IV) but maintains the same security guarantees
 - **Multipart within splits**: If individual split objects still require multipart uploads, those parts are not encrypted (same limitation as above)
 
+### Disabling Multipart Uploads
+
+For maximum security, you can disable multipart uploads entirely:
+
+```yaml
+server:
+  disable_multipart_uploads: true  # Set via SERVER_DISABLE_MULTIPART_UPLOADS env var
+```
+
+**When enabled:**
+- ✅ **All uploads are encrypted** (no unencrypted multipart data)
+- ❌ **Multipart uploads are rejected** with HTTP 501 Not Implemented
+- ✅ **Single-part uploads work normally**
+- ⚠️ **Large files must be split** into multiple single-part objects
+
+This is a security vs. compatibility trade-off. Most S3 clients support single-part uploads for large files through automatic splitting.
+
 ### Encryption Details
 
 - **Algorithm**: AES-256-GCM (default) or ChaCha20-Poly1305

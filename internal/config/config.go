@@ -79,6 +79,8 @@ type ServerConfig struct {
 	IdleTimeout       time.Duration `yaml:"idle_timeout" env:"SERVER_IDLE_TIMEOUT"`
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout" env:"SERVER_READ_HEADER_TIMEOUT"`
 	MaxHeaderBytes    int           `yaml:"max_header_bytes" env:"SERVER_MAX_HEADER_BYTES"`
+	// DisableMultipartUploads disables multipart upload operations to ensure all data is encrypted
+	DisableMultipartUploads bool `yaml:"disable_multipart_uploads" env:"SERVER_DISABLE_MULTIPART_UPLOADS"`
 }
 
 // RateLimitConfig holds rate limiting configuration.
@@ -119,11 +121,12 @@ func LoadConfig(path string) (*Config, error) {
 			Level:     6,
 		},
 		Server: ServerConfig{
-			ReadTimeout:       15 * time.Second,
-			WriteTimeout:      15 * time.Second,
-			IdleTimeout:       60 * time.Second,
-			ReadHeaderTimeout: 10 * time.Second,
-			MaxHeaderBytes:    1 << 20, // 1MB
+			ReadTimeout:            15 * time.Second,
+			WriteTimeout:           15 * time.Second,
+			IdleTimeout:            60 * time.Second,
+			ReadHeaderTimeout:      10 * time.Second,
+			MaxHeaderBytes:         1 << 20, // 1MB
+			DisableMultipartUploads: false, // Allow multipart uploads by default for compatibility
 		},
 		RateLimit: RateLimitConfig{
 			Enabled: false,

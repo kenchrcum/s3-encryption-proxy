@@ -1495,6 +1495,19 @@ func (h *Handler) handleCreateMultipartUpload(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Check if multipart uploads are disabled
+	if h.config != nil && h.config.Server.DisableMultipartUploads {
+		s3Err := &S3Error{
+			Code:       "NotImplemented",
+			Message:    "Multipart uploads are disabled to ensure all data is encrypted. Use single-part uploads instead.",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusNotImplemented,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
 	ctx := r.Context()
 
 	// Get S3 client (may use client credentials if enabled)
@@ -1713,6 +1726,19 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if multipart uploads are disabled
+	if h.config != nil && h.config.Server.DisableMultipartUploads {
+		s3Err := &S3Error{
+			Code:       "NotImplemented",
+			Message:    "Multipart uploads are disabled to ensure all data is encrypted. Use single-part uploads instead.",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusNotImplemented,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest("PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
 	partNumber, err := strconv.ParseInt(partNumberStr, 10, 32)
 	if err != nil || partNumber < 1 {
 		s3Err := &S3Error{
@@ -1850,6 +1876,19 @@ func (h *Handler) handleCompleteMultipartUpload(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	// Check if multipart uploads are disabled
+	if h.config != nil && h.config.Server.DisableMultipartUploads {
+		s3Err := &S3Error{
+			Code:       "NotImplemented",
+			Message:    "Multipart uploads are disabled to ensure all data is encrypted. Use single-part uploads instead.",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusNotImplemented,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest("POST", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
 	ctx := r.Context()
 
 	// Get S3 client (may use client credentials if enabled)
@@ -1943,6 +1982,19 @@ func (h *Handler) handleAbortMultipartUpload(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Check if multipart uploads are disabled
+	if h.config != nil && h.config.Server.DisableMultipartUploads {
+		s3Err := &S3Error{
+			Code:       "NotImplemented",
+			Message:    "Multipart uploads are disabled to ensure all data is encrypted.",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusNotImplemented,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest("DELETE", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
 	ctx := r.Context()
 
 	// Get S3 client (may use client credentials if enabled)
@@ -1984,6 +2036,19 @@ func (h *Handler) handleListParts(w http.ResponseWriter, r *http.Request) {
 	if bucket == "" || key == "" || uploadID == "" {
 		s3Err := ErrInvalidRequest
 		s3Err.Resource = r.URL.Path
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
+	// Check if multipart uploads are disabled
+	if h.config != nil && h.config.Server.DisableMultipartUploads {
+		s3Err := &S3Error{
+			Code:       "NotImplemented",
+			Message:    "Multipart uploads are disabled to ensure all data is encrypted.",
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusNotImplemented,
+		}
 		s3Err.WriteXML(w)
 		h.metrics.RecordHTTPRequest("GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
 		return
