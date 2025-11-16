@@ -2,6 +2,7 @@ package crypto
 
 import (
 	"bytes"
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/md5"
@@ -12,6 +13,10 @@ import (
 	"fmt"
 	"io"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -71,6 +76,8 @@ type engine struct {
 	compactor       *MetadataCompactor
 	// Buffer pool for reducing allocations
 	bufferPool *BufferPool
+	// Tracing
+	tracer trace.Tracer
 }
 
 // NewEngine creates a new encryption engine with the given password.
@@ -156,6 +163,7 @@ func NewEngineWithChunkingAndProvider(password string, compressionEngine Compres
 		providerProfile:     profile,
 		compactor:           compactor,
 		bufferPool:         GetGlobalBufferPool(),
+		tracer:             otel.Tracer("s3-encryption-gateway.crypto"),
 	}, nil
 }
 
@@ -241,15 +249,31 @@ func (e *engine) createCipher(key []byte) (cipher.AEAD, error) {
 // Encrypt encrypts data from the reader and returns an encrypted reader
 // along with encryption metadata.
 func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+	ctx := context.Background() // TODO: Accept context parameter in future refactor
+	ctx, span := e.tracer.Start(ctx, "Crypto.Encrypt",
+		trace.WithAttributes(
+			attribute.String("crypto.algorithm", e.preferredAlgorithm),
+			attribute.Bool("crypto.chunked", e.chunkedMode),
+		),
+	)
+	defer span.End()
+
 	// If chunked mode is enabled, use streaming chunked encryption
 	if e.chunkedMode {
-		return e.encryptChunked(reader, metadata)
+		encryptedReader, meta, err := e.encryptChunked(reader, metadata)
+		if err != nil {
+			span.SetStatus(codes.Error, err.Error())
+			return nil, nil, err
+		}
+		span.SetStatus(codes.Ok, "")
+		return encryptedReader, meta, nil
 	}
 
 	// Legacy buffered mode for backward compatibility
 	// Read the plaintext first to get size and content type (needed for compression decision)
 	plaintext, err := io.ReadAll(reader)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return nil, nil, fmt.Errorf("failed to read plaintext: %w", err)
 	}
 	originalSize := int64(len(plaintext))
@@ -386,15 +410,24 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	// Compact metadata according to provider profile
 	compactedMetadata, err := e.compactor.CompactMetadata(encMetadata)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return nil, nil, fmt.Errorf("failed to compact metadata: %w", err)
 	}
 
+	span.SetStatus(codes.Ok, "")
 	return encryptedReader, compactedMetadata, nil
 }
 
 // Decrypt decrypts data from the reader using the provided metadata
 // and returns a decrypted reader along with updated metadata.
 func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reader, map[string]string, error) {
+	ctx := context.Background() // TODO: Accept context parameter in future refactor
+	ctx, span := e.tracer.Start(ctx, "Crypto.Decrypt",
+		trace.WithAttributes(
+			attribute.Bool("crypto.chunked", e.IsEncrypted(metadata) && isChunkedFormat(metadata)),
+		),
+	)
+	defer span.End()
 	if !e.IsEncrypted(metadata) {
 		// Not encrypted, return as-is
 		return reader, metadata, nil

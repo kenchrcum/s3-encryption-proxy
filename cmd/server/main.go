@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -18,12 +19,81 @@ import (
 	"github.com/kenneth/s3-encryption-gateway/internal/middleware"
 	"github.com/kenneth/s3-encryption-gateway/internal/s3"
 	"github.com/sirupsen/logrus"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/jaeger"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0"
 )
 
 var (
 	version = "dev"
 	commit  = "unknown"
 )
+
+// InitTracing initializes OpenTelemetry tracing based on configuration
+func InitTracing(cfg config.TracingConfig, logger *logrus.Logger) (*sdktrace.TracerProvider, error) {
+	// Create resource with service information
+	res, err := resource.New(context.Background(),
+		resource.WithAttributes(
+			semconv.ServiceName(cfg.ServiceName),
+			semconv.ServiceVersion(cfg.ServiceVersion),
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource: %w", err)
+	}
+
+	// Create exporter based on configuration
+	var exporter sdktrace.SpanExporter
+	switch cfg.Exporter {
+	case "stdout":
+		exporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
+		if err != nil {
+			return nil, fmt.Errorf("failed to create stdout exporter: %w", err)
+		}
+	case "jaeger":
+		exporter, err = jaeger.New(jaeger.WithCollectorEndpoint(jaeger.WithEndpoint(cfg.JaegerEndpoint)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create jaeger exporter: %w", err)
+		}
+	case "otlp":
+		exporter, err = otlptracegrpc.New(context.Background(),
+			otlptracegrpc.WithEndpoint(cfg.OtlpEndpoint),
+			otlptracegrpc.WithInsecure(),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create OTLP exporter: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported exporter: %s", cfg.Exporter)
+	}
+
+	// Create sampler
+	var sampler sdktrace.Sampler
+	if cfg.SamplingRatio >= 1.0 {
+		sampler = sdktrace.AlwaysSample()
+	} else if cfg.SamplingRatio <= 0.0 {
+		sampler = sdktrace.NeverSample()
+	} else {
+		sampler = sdktrace.TraceIDRatioBased(cfg.SamplingRatio)
+	}
+
+	// Create tracer provider
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sampler),
+		sdktrace.WithResource(res),
+		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(exporter)),
+	)
+
+	// Set as global tracer provider
+	otel.SetTracerProvider(tp)
+
+	return tp, nil
+}
 
 func main() {
 	// Initialize logger
@@ -54,6 +124,26 @@ func main() {
 		"version": version,
 		"commit":  commit,
 	}).Info("Starting S3 Encryption Gateway")
+
+	// Initialize tracing if enabled
+	var tracerProvider *sdktrace.TracerProvider
+	if cfg.Tracing.Enabled {
+		var err error
+		tracerProvider, err = InitTracing(cfg.Tracing, logger)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to initialize tracing")
+		}
+		defer func() {
+			if err := tracerProvider.Shutdown(context.Background()); err != nil {
+				logger.WithError(err).Error("Failed to shutdown tracer provider")
+			}
+		}()
+		logger.WithFields(logrus.Fields{
+			"exporter": cfg.Tracing.Exporter,
+			"service_name": cfg.Tracing.ServiceName,
+			"sampling_ratio": cfg.Tracing.SamplingRatio,
+		}).Info("Tracing initialized")
+	}
 
 	// Initialize metrics
 	m := metrics.NewMetrics()
@@ -241,6 +331,11 @@ func main() {
 	httpHandler := middleware.RecoveryMiddleware(logger)(router)
 	httpHandler = middleware.LoggingMiddleware(logger)(httpHandler)
 	httpHandler = middleware.SecurityHeadersMiddleware()(httpHandler)
+
+	// Apply tracing middleware if tracing is enabled
+	if cfg.Tracing.Enabled {
+		httpHandler = middleware.TracingMiddleware(cfg.Tracing.RedactSensitive)(httpHandler)
+	}
 	
 	// Apply bucket validation middleware if proxied bucket is configured
 	if cfg.ProxiedBucket != "" {

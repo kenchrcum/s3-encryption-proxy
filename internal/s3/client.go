@@ -14,6 +14,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 
 	"github.com/kenneth/s3-encryption-gateway/internal/config"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Client is the S3 backend client interface.
@@ -96,8 +100,9 @@ type ErrorObject struct {
 
 // s3Client implements the Client interface using AWS SDK v2.
 type s3Client struct {
-	client *s3.Client
-	config *config.BackendConfig
+	client  *s3.Client
+	config  *config.BackendConfig
+	tracer  trace.Tracer
 }
 
 // ClientFactory creates S3 clients, optionally with per-request credentials.
@@ -176,6 +181,7 @@ func (f *ClientFactory) GetClientWithCredentials(accessKey, secretKey string) (C
 	return &s3Client{
 		client: client,
 		config: f.baseConfig,
+		tracer: otel.Tracer("s3-encryption-gateway.s3"),
 	}, nil
 }
 
@@ -221,6 +227,14 @@ func validateEndpoint(endpoint string) error {
 
 // PutObject uploads an object to S3.
 func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64) error {
+	ctx, span := c.tracer.Start(ctx, "S3.PutObject",
+		trace.WithAttributes(
+			attribute.String("s3.bucket", bucket),
+			attribute.String("s3.key", key),
+		),
+	)
+	defer span.End()
+
 	// Convert metadata - strip x-amz-meta- prefix as AWS SDK v2 adds it automatically
 	// For custom endpoints (Ceph/Hetzner), the SDK should still handle this correctly
 	convertedMeta := convertMetadata(metadata)
@@ -246,14 +260,24 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
 	}
 	_, err := c.client.PutObject(ctx, input)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to put object %s/%s: %w", bucket, key, err)
 	}
 
+	span.SetStatus(codes.Ok, "")
 	return nil
 }
 
 // GetObject retrieves an object from S3.
 func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID *string, rangeHeader *string) (io.ReadCloser, map[string]string, error) {
+	ctx, span := c.tracer.Start(ctx, "S3.GetObject",
+		trace.WithAttributes(
+			attribute.String("s3.bucket", bucket),
+			attribute.String("s3.key", key),
+		),
+	)
+	defer span.End()
+
 	input := &s3.GetObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -269,6 +293,7 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 
 	result, err := c.client.GetObject(ctx, input)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return nil, nil, fmt.Errorf("failed to get object %s/%s: %w", bucket, key, err)
 	}
 
@@ -297,11 +322,20 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 		metadata["Content-Encoding"] = *result.ContentEncoding
 	}
 
+	span.SetStatus(codes.Ok, "")
 	return result.Body, metadata, nil
 }
 
 // DeleteObject deletes an object from S3.
 func (c *s3Client) DeleteObject(ctx context.Context, bucket, key string, versionID *string) error {
+	ctx, span := c.tracer.Start(ctx, "S3.DeleteObject",
+		trace.WithAttributes(
+			attribute.String("s3.bucket", bucket),
+			attribute.String("s3.key", key),
+		),
+	)
+	defer span.End()
+
 	input := &s3.DeleteObjectInput{
 		Bucket: aws.String(bucket),
 		Key:    aws.String(key),
@@ -313,9 +347,11 @@ func (c *s3Client) DeleteObject(ctx context.Context, bucket, key string, version
 
 	_, err := c.client.DeleteObject(ctx, input)
 	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("failed to delete object %s/%s: %w", bucket, key, err)
 	}
 
+	span.SetStatus(codes.Ok, "")
 	return nil
 }
 

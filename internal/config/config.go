@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ type Config struct {
 	TLS          TLSConfig         `yaml:"tls"`
 	Server       ServerConfig      `yaml:"server"`
 	RateLimit    RateLimitConfig   `yaml:"rate_limit"`
+	Tracing      TracingConfig     `yaml:"tracing"`
 }
 
 // BackendConfig holds S3 backend configuration.
@@ -104,6 +106,18 @@ type AuditConfig struct {
 	MaxEvents int  `yaml:"max_events" env:"AUDIT_MAX_EVENTS"` // Max events to keep in memory
 }
 
+// TracingConfig holds OpenTelemetry tracing configuration.
+type TracingConfig struct {
+	Enabled          bool    `yaml:"enabled" env:"TRACING_ENABLED"`                     // Enable/disable tracing
+	ServiceName      string  `yaml:"service_name" env:"TRACING_SERVICE_NAME"`           // Service name for traces
+	ServiceVersion   string  `yaml:"service_version" env:"TRACING_SERVICE_VERSION"`     // Service version
+	Exporter         string  `yaml:"exporter" env:"TRACING_EXPORTER"`                   // Exporter type: stdout, jaeger, otlp
+	JaegerEndpoint   string  `yaml:"jaeger_endpoint" env:"TRACING_JAEGER_ENDPOINT"`     // Jaeger collector endpoint
+	OtlpEndpoint     string  `yaml:"otlp_endpoint" env:"TRACING_OTLP_ENDPOINT"`         // OTLP gRPC endpoint
+	SamplingRatio    float64 `yaml:"sampling_ratio" env:"TRACING_SAMPLING_RATIO"`       // Sampling ratio (0.0-1.0)
+	RedactSensitive  bool    `yaml:"redact_sensitive" env:"TRACING_REDACT_SENSITIVE"`   // Redact sensitive data in spans
+}
+
 // LoadConfig loads configuration from a file and environment variables.
 func LoadConfig(path string) (*Config, error) {
 	config := &Config{
@@ -142,6 +156,14 @@ func LoadConfig(path string) (*Config, error) {
 		Audit: AuditConfig{
 			Enabled:   false,
 			MaxEvents: 10000,
+		},
+		Tracing: TracingConfig{
+			Enabled:         false,
+			ServiceName:     "s3-encryption-gateway",
+			ServiceVersion:  "dev",
+			Exporter:        "stdout",
+			SamplingRatio:   1.0,
+			RedactSensitive: true,
 		},
 	}
 
@@ -310,6 +332,33 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("BACKEND_USE_CLIENT_CREDENTIALS"); v != "" {
 		config.Backend.UseClientCredentials = v == "true" || v == "1"
 	}
+	// Tracing configuration
+	if v := os.Getenv("TRACING_ENABLED"); v != "" {
+		config.Tracing.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("TRACING_SERVICE_NAME"); v != "" {
+		config.Tracing.ServiceName = v
+	}
+	if v := os.Getenv("TRACING_SERVICE_VERSION"); v != "" {
+		config.Tracing.ServiceVersion = v
+	}
+	if v := os.Getenv("TRACING_EXPORTER"); v != "" {
+		config.Tracing.Exporter = v
+	}
+	if v := os.Getenv("TRACING_JAEGER_ENDPOINT"); v != "" {
+		config.Tracing.JaegerEndpoint = v
+	}
+	if v := os.Getenv("TRACING_OTLP_ENDPOINT"); v != "" {
+		config.Tracing.OtlpEndpoint = v
+	}
+	if v := os.Getenv("TRACING_SAMPLING_RATIO"); v != "" {
+		if ratio, err := strconv.ParseFloat(v, 64); err == nil && ratio >= 0.0 && ratio <= 1.0 {
+			config.Tracing.SamplingRatio = ratio
+		}
+	}
+	if v := os.Getenv("TRACING_REDACT_SENSITIVE"); v != "" {
+		config.Tracing.RedactSensitive = v == "true" || v == "1"
+	}
 }
 
 // Validate validates the configuration and returns an error if invalid.
@@ -358,7 +407,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
-    // Validate encryption algorithms policy
+	// Validate encryption algorithms policy
     allowed := map[string]bool{
         "AES256-GCM":         true,
         "ChaCha20-Poly1305": true,
@@ -373,6 +422,30 @@ func (c *Config) Validate() error {
             if !allowed[strings.TrimSpace(alg)] {
                 return fmt.Errorf("invalid entry in encryption.supported_algorithms: %s", alg)
             }
+        }
+    }
+
+    // Validate tracing configuration
+    if c.Tracing.Enabled {
+        if c.Tracing.ServiceName == "" {
+            return fmt.Errorf("tracing.service_name is required when tracing is enabled")
+        }
+        validExporters := map[string]bool{
+            "stdout": true,
+            "jaeger": true,
+            "otlp":   true,
+        }
+        if !validExporters[c.Tracing.Exporter] {
+            return fmt.Errorf("invalid tracing.exporter: %s (must be stdout, jaeger, or otlp)", c.Tracing.Exporter)
+        }
+        if c.Tracing.SamplingRatio < 0.0 || c.Tracing.SamplingRatio > 1.0 {
+            return fmt.Errorf("tracing.sampling_ratio must be between 0.0 and 1.0")
+        }
+        if c.Tracing.Exporter == "jaeger" && c.Tracing.JaegerEndpoint == "" {
+            return fmt.Errorf("tracing.jaeger_endpoint is required when exporter is jaeger")
+        }
+        if c.Tracing.Exporter == "otlp" && c.Tracing.OtlpEndpoint == "" {
+            return fmt.Errorf("tracing.otlp_endpoint is required when exporter is otlp")
         }
     }
 
