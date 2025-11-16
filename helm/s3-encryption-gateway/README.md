@@ -220,6 +220,136 @@ config:
 1. Label your namespace: `kubectl label namespace <name> kubernetes.io/metadata.name=<name>`
 2. Or configure a custom label key in `networkPolicy.namespaceLabel.key`
 
+## Extending the Chart
+
+The Helm chart supports several extension points to customize the deployment for advanced use cases.
+
+### Extra Environment Variables
+
+Add custom environment variables to the main container:
+
+```yaml
+extraEnv:
+  - name: MY_CUSTOM_VAR
+    value: "my-value"
+  - name: MY_SECRET_VAR
+    valueFrom:
+      secretKeyRef:
+        name: my-secret
+        key: my-key
+```
+
+### Extra Volumes and Volume Mounts
+
+Mount additional volumes into the main container:
+
+```yaml
+extraVolumes:
+  - name: my-config
+    configMap:
+      name: my-configmap
+  - name: my-secret-volume
+    secret:
+      secretName: my-secret
+
+extraVolumeMounts:
+  - name: my-config
+    mountPath: /etc/my-config
+    readOnly: true
+  - name: my-secret-volume
+    mountPath: /etc/my-secrets
+    readOnly: true
+```
+
+### Init Containers
+
+Run initialization containers before the main gateway starts:
+
+```yaml
+initContainers:
+  - name: init-myservice
+    image: busybox:1.35
+    command: ['sh', '-c', 'echo "Initializing..." && sleep 5']
+    volumeMounts:
+      - name: shared-data
+        mountPath: /data
+    env:
+      - name: INIT_VAR
+        value: "initialized"
+```
+
+### Sidecar Containers
+
+Run sidecar containers alongside the main gateway:
+
+```yaml
+sidecars:
+  - name: sidecar-logger
+    image: fluent/fluent-bit:2.0
+    ports:
+      - containerPort: 2020
+    volumeMounts:
+      - name: varlogcontainers
+        mountPath: /var/log/containers
+        readOnly: true
+    env:
+      - name: FLUENT_ELASTICSEARCH_HOST
+        value: "elasticsearch.default.svc.cluster.local"
+      - name: FLUENT_ELASTICSEARCH_PORT
+        value: "9200"
+```
+
+### Complete Example with Extensions
+
+```yaml
+# Extra environment variables
+extraEnv:
+  - name: LOG_LEVEL
+    value: "debug"
+  - name: CUSTOM_CONFIG
+    valueFrom:
+      configMapKeyRef:
+        name: my-gateway-config
+        key: custom-setting
+
+# Extra volumes and mounts
+extraVolumes:
+  - name: custom-config
+    configMap:
+      name: my-gateway-config
+  - name: ssl-certs
+    secret:
+      secretName: my-ssl-certs
+
+extraVolumeMounts:
+  - name: custom-config
+    mountPath: /etc/gateway-config
+    readOnly: true
+  - name: ssl-certs
+    mountPath: /etc/ssl/certs
+    readOnly: true
+
+# Init container for setup
+initContainers:
+  - name: setup-gateway
+    image: busybox:1.35
+    command: ['sh', '-c', 'mkdir -p /tmp/setup && echo "Gateway setup complete" > /tmp/setup/done']
+    volumeMounts:
+      - name: setup-volume
+        mountPath: /tmp/setup
+
+# Sidecar for monitoring
+sidecars:
+  - name: prometheus-exporter
+    image: nginx/nginx-prometheus-exporter:0.11.0
+    ports:
+      - containerPort: 9113
+        name: http
+    env:
+      - name: SCRAPE_URI
+        value: "http://localhost:8080/metrics"
+```
+
 ## Examples
 
 ### Basic Installation with Secrets

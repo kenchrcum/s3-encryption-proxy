@@ -256,6 +256,61 @@ certManager:
     # How long before expiry to renew (default: 720h = 30 days)
     renewBefore: "720h"
 
+# Extra environment variables to add to the main container
+extraEnv: []
+# Example:
+# extraEnv:
+#   - name: MY_CUSTOM_VAR
+#     value: "my-value"
+#   - name: MY_SECRET_VAR
+#     valueFrom:
+#       secretKeyRef:
+#         name: my-secret
+#         key: my-key
+
+# Extra volume mounts to add to the main container
+extraVolumeMounts: []
+# Example:
+# extraVolumeMounts:
+#   - name: my-config
+#     mountPath: /etc/my-config
+#     readOnly: true
+
+# Extra volumes to add to the pod spec
+extraVolumes: []
+# Example:
+# extraVolumes:
+#   - name: my-config
+#     configMap:
+#       name: my-configmap
+#   - name: my-secret
+#     secret:
+#       secretName: my-secret
+
+# Init containers to run before the main container
+initContainers: []
+# Example:
+# initContainers:
+#   - name: init-myservice
+#     image: busybox:1.35
+#     command: ['sh', '-c', 'echo initializing...']
+#     volumeMounts:
+#       - name: my-volume
+#         mountPath: /data
+
+# Sidecar containers to run alongside the main container
+sidecars: []
+# Example:
+# sidecars:
+#   - name: sidecar-logger
+#     image: fluent/fluent-bit:2.0
+#     ports:
+#       - containerPort: 2020
+#     volumeMounts:
+#       - name: varlogcontainers
+#         mountPath: /var/log/containers
+#         readOnly: true
+
 resources:
   limits:
     cpu: 500m
