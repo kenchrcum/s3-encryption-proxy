@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="800" height="400" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="400" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="bold">
+    Range Request Optimization Flow
+  </text>
+
+  <!-- Client Request -->
+  <rect x="50" y="60" width="120" height="40" fill="#e1f5fe" stroke="#01579b" stroke-width="2" rx="5"/>
+  <text x="110" y="85" text-anchor="middle" font-family="Arial, sans-serif" font-size="12">
+    Client Request
+  </text>
+  <text x="110" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#666">
+    GET /obj bytes=1000-1999
+  </text>
+
+  <!-- Gateway Processing -->
+  <rect x="220" y="60" width="120" height="40" fill="#f3e5f5" stroke="#4a148c" stroke-width="2" rx="5"/>
+  <text x="280" y="85" text-anchor="middle" font-family="Arial, sans-serif" font-size="12">
+    Range Calculation
+  </text>
+  <text x="280" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#666">
+    Plaintext → Chunks
+  </text>
+
+  <!-- S3 Request -->
+  <rect x="390" y="60" width="120" height="40" fill="#e8f5e8" stroke="#1b5e20" stroke-width="2" rx="5"/>
+  <text x="450" y="85" text-anchor="middle" font-family="Arial, sans-serif" font-size="12">
+    Optimized S3 Request
+  </text>
+  <text x="450" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#666">
+    GET bytes=66552-131103
+  </text>
+
+  <!-- Backend Response -->
+  <rect x="560" y="60" width="120" height="40" fill="#fff3e0" stroke="#e65100" stroke-width="2" rx="5"/>
+  <text x="620" y="85" text-anchor="middle" font-family="Arial, sans-serif" font-size="12">
+    Backend Response
+  </text>
+  <text x="620" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#666">
+    Chunks 1-2 (64KB + tags)
+  </text>
+
+  <!-- Arrows -->
+  <line x1="170" y1="80" x2="220" y2="80" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <line x1="340" y1="80" x2="390" y2="80" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <line x1="510" y1="80" x2="560" y2="80" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <line x1="680" y1="80" x2="730" y2="80" stroke="#666" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- Chunk Visualization -->
+  <text x="400" y="140" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold">
+    Chunk Mapping Example (64KB chunks)
+  </text>
+
+  <!-- Plaintext visualization -->
+  <rect x="50" y="160" width="700" height="30" fill="#f5f5f5" stroke="#333" stroke-width="1"/>
+  <text x="400" y="180" text-anchor="middle" font-family="Arial, sans-serif" font-size="12">
+    Plaintext Object (256KB total)
+  </text>
+
+  <!-- Chunk boundaries -->
+  <line x1="150" y1="160" x2="150" y2="190" stroke="#666" stroke-width="1"/>
+  <line x1="250" y1="160" x2="250" y2="190" stroke="#666" stroke-width="1"/>
+  <line x1="350" y1="160" x2="350" y2="190" stroke="#666" stroke-width="1"/>
+  <line x1="450" y1="160" x2="450" y2="190" stroke="#666" stroke-width="1"/>
+  <line x1="550" y1="160" x2="550" y2="190" stroke="#666" stroke-width="1"/>
+  <line x1="650" y1="160" x2="650" y2="190" stroke="#666" stroke-width="1"/>
+
+  <!-- Chunk labels -->
+  <text x="100" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">Chunk 0</text>
+  <text x="200" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">Chunk 1</text>
+  <text x="300" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">Chunk 2</text>
+  <text x="400" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">Chunk 3</text>
+  <text x="500" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">Chunk 4</text>
+  <text x="600" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">Chunk 5</text>
+  <text x="700" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">Chunk 6</text>
+
+  <!-- Byte positions -->
+  <text x="50" y="230" text-anchor="start" font-family="Arial, sans-serif" font-size="9">0</text>
+  <text x="150" y="230" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">64K</text>
+  <text x="250" y="230" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">128K</text>
+  <text x="350" y="230" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">192K</text>
+  <text x="450" y="230" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">256K</text>
+
+  <!-- Range request visualization -->
+  <rect x="200" y="160" width="51" height="30" fill="#ff9800" stroke="#e65100" stroke-width="2" opacity="0.7"/>
+  <text x="225" y="180" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#000">
+    Range: 1000-1999
+  </text>
+
+  <!-- Encrypted chunks -->
+  <text x="400" y="270" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold">
+    Encrypted Storage (64KB + 16B auth tag per chunk)
+  </text>
+
+  <rect x="50" y="290" width="700" height="30" fill="#f5f5f5" stroke="#333" stroke-width="1"/>
+  <text x="400" y="310" text-anchor="middle" font-family="Arial, sans-serif" font-size="12">
+    Encrypted Object (4 chunks needed for range)
+  </text>
+
+  <!-- Encrypted chunk boundaries -->
+  <line x1="150" y1="290" x2="150" y2="320" stroke="#666" stroke-width="1"/>
+  <line x1="250" y1="290" x2="250" y2="320" stroke="#666" stroke-width="1"/>
+  <line x1="350" y1="290" x2="350" y2="320" stroke="#666" stroke-width="1"/>
+  <line x1="450" y1="290" x2="450" y2="320" stroke="#666" stroke-width="1"/>
+
+  <!-- Highlight fetched chunks -->
+  <rect x="150" y="290" width="200" height="30" fill="#4caf50" stroke="#2e7d32" stroke-width="2" opacity="0.7"/>
+  <text x="250" y="310" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#fff">
+    Chunks 1-2 (132KB total)
+  </text>
+
+  <!-- Performance benefit -->
+  <text x="400" y="360" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#2e7d32">
+    Performance: 99.9% reduction in network transfer and decryption
+  </text>
+  <text x="400" y="375" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#666">
+    Instead of 256KB → only 132KB transferred and decrypted
+  </text>
+</svg>

@@ -1,0 +1,240 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="900" height="500" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#666"/>
+    </marker>
+    <!-- Flow arrows -->
+    <marker id="flowarrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#2196f3"/>
+    </marker>
+    <!-- Success arrows -->
+    <marker id="successarrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#4caf50"/>
+    </marker>
+    <!-- Error arrows -->
+    <marker id="errorarrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#f44336"/>
+    </marker>
+  </defs>
+
+  <!-- Title -->
+  <text x="450" y="30" text-anchor="middle" font-family="Arial, sans-serif" font-size="18" font-weight="bold">
+    Multipart Upload Flow with Security Validation
+  </text>
+
+  <!-- Client -->
+  <rect x="50" y="60" width="100" height="50" fill="#e3f2fd" stroke="#1976d2" stroke-width="2" rx="8"/>
+  <text x="100" y="85" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold">
+    S3 Client
+  </text>
+  <text x="100" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">
+    (awscli, SDK)
+  </text>
+
+  <!-- Gateway -->
+  <rect x="200" y="60" width="100" height="50" fill="#f3e5f5" stroke="#7b1fa2" stroke-width="2" rx="8"/>
+  <text x="250" y="85" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold">
+    Gateway
+  </text>
+  <text x="250" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">
+    Validation Layer
+  </text>
+
+  <!-- Backend -->
+  <rect x="350" y="60" width="100" height="50" fill="#e8f5e8" stroke="#388e3c" stroke-width="2" rx="8"/>
+  <text x="400" y="85" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold">
+    S3 Backend
+  </text>
+  <text x="400" y="100" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">
+    (AWS, MinIO, etc.)
+  </text>
+
+  <!-- Flow steps -->
+  <text x="50" y="140" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold">
+    1. Initiate Multipart Upload
+  </text>
+
+  <!-- Step 1 arrows -->
+  <line x1="150" y1="85" x2="200" y2="85" stroke="#2196f3" stroke-width="3" marker-end="url(#flowarrow)"/>
+  <line x1="300" y1="85" x2="350" y2="85" stroke="#2196f3" stroke-width="3" marker-end="url(#flowarrow)"/>
+
+  <!-- Initiate request -->
+  <rect x="180" y="150" width="140" height="30" fill="#e3f2fd" stroke="#1976d2" stroke-width="1" rx="5"/>
+  <text x="250" y="170" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">
+    POST /bucket/key?uploads
+  </text>
+
+  <!-- Initiate response -->
+  <rect x="350" y="150" width="140" height="30" fill="#c8e6c9" stroke="#388e3c" stroke-width="1" rx="5"/>
+  <text x="420" y="170" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">
+    UploadId: abc123...
+  </text>
+
+  <!-- Step 2 -->
+  <text x="50" y="220" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold">
+    2. Upload Parts (Parallel)
+  </text>
+
+  <!-- Part upload flows -->
+  <line x1="100" y1="240" x2="200" y2="240" stroke="#2196f3" stroke-width="2" marker-end="url(#flowarrow)"/>
+  <line x1="250" y1="240" x2="350" y2="240" stroke="#2196f3" stroke-width="2" marker-end="url(#flowarrow)"/>
+
+  <line x1="100" y1="260" x2="200" y2="260" stroke="#2196f3" stroke-width="2" marker-end="url(#flowarrow)"/>
+  <line x1="250" y1="260" x2="350" y2="260" stroke="#2196f3" stroke-width="2" marker-end="url(#flowarrow)"/>
+
+  <line x1="100" y1="280" x2="200" y2="280" stroke="#2196f3" stroke-width="2" marker-end="url(#flowarrow)"/>
+  <text x="150" y="290" text-anchor="middle" font-family="Arial, sans-serif" font-size="10">...</text>
+
+  <!-- Part requests -->
+  <rect x="180" y="230" width="140" height="20" fill="#e3f2fd" stroke="#1976d2" stroke-width="1" rx="3"/>
+  <text x="250" y="243" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    PUT /key?partNumber=1&amp;uploadId=abc123
+  </text>
+
+  <rect x="180" y="255" width="140" height="20" fill="#e3f2fd" stroke="#1976d2" stroke-width="1" rx="3"/>
+  <text x="250" y="268" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    PUT /key?partNumber=2&amp;uploadId=abc123
+  </text>
+
+  <rect x="180" y="280" width="140" height="20" fill="#e3f2fd" stroke="#1976d2" stroke-width="1" rx="3"/>
+  <text x="250" y="293" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    PUT /key?partNumber=N&amp;uploadId=abc123
+  </text>
+
+  <!-- Part responses -->
+  <rect x="350" y="230" width="100" height="20" fill="#c8e6c9" stroke="#388e3c" stroke-width="1" rx="3"/>
+  <text x="400" y="243" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    ETag: "etag1"
+  </text>
+
+  <rect x="350" y="255" width="100" height="20" fill="#c8e6c9" stroke="#388e3c" stroke-width="1" rx="3"/>
+  <text x="400" y="268" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    ETag: "etag2"
+  </text>
+
+  <rect x="350" y="280" width="100" height="20" fill="#c8e6c9" stroke="#388e3c" stroke-width="1" rx="3"/>
+  <text x="400" y="293" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    ETag: "etagN"
+  </text>
+
+  <!-- Step 3 -->
+  <text x="50" y="330" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold">
+    3. Complete Multipart Upload
+  </text>
+
+  <!-- Complete flow -->
+  <line x1="150" y1="350" x2="200" y2="350" stroke="#2196f3" stroke-width="3" marker-end="url(#flowarrow)"/>
+  <line x1="300" y1="350" x2="350" y2="350" stroke="#2196f3" stroke-width="3" marker-end="url(#flowarrow)"/>
+
+  <!-- Security validation box -->
+  <rect x="200" y="340" width="150" height="80" fill="#fff3e0" stroke="#ef6c00" stroke-width="2" rx="8"/>
+  <text x="275" y="355" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="bold">
+    Security Validation
+  </text>
+  <text x="275" y="368" text-anchor="middle" font-family="Arial, sans-serif" font-size="8" fill="#666">
+    • XML size limit (10MB)
+  </text>
+  <text x="275" y="378" text-anchor="middle" font-family="Arial, sans-serif" font-size="8" fill="#666">
+    • Part number validation
+  </text>
+  <text x="275" y="388" text-anchor="middle" font-family="Arial, sans-serif" font-size="8" fill="#666">
+    • ETag format checking
+  </text>
+  <text x="275" y="398" text-anchor="middle" font-family="Arial, sans-serif" font-size="8" fill="#666">
+    • Duplicate detection
+  </text>
+  <text x="275" y="408" text-anchor="middle" font-family="Arial, sans-serif" font-size="8" fill="#666">
+    • XXE prevention
+  </text>
+
+  <!-- Complete request -->
+  <rect x="50" y="360" width="130" height="50" fill="#e3f2fd" stroke="#1976d2" stroke-width="1" rx="5"/>
+  <text x="115" y="375" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" font-weight="bold">
+    POST /bucket/key?uploadId=abc123
+  </text>
+  <text x="115" y="390" text-anchor="middle" font-family="Arial, sans-serif" font-size="8">
+    &lt;CompleteMultipartUpload&gt;
+  </text>
+  <text x="115" y="400" text-anchor="middle" font-family="Arial, sans-serif" font-size="8">
+    &lt;Part&gt;...&lt;/Part&gt;
+  </text>
+  <text x="115" y="410" text-anchor="middle" font-family="Arial, sans-serif" font-size="8">
+    &lt;/CompleteMultipartUpload&gt;
+  </text>
+
+  <!-- Complete response -->
+  <rect x="500" y="360" width="130" height="40" fill="#c8e6c9" stroke="#388e3c" stroke-width="1" rx="5"/>
+  <text x="565" y="380" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" font-weight="bold">
+    200 OK
+  </text>
+  <text x="565" y="395" text-anchor="middle" font-family="Arial, sans-serif" font-size="8">
+    ETag: "final-etag"
+  </text>
+
+  <!-- Error handling -->
+  <text x="700" y="140" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" font-weight="bold" fill="#f44336">
+    Error Handling
+  </text>
+
+  <!-- Error flows -->
+  <rect x="650" y="160" width="200" height="120" fill="#ffebee" stroke="#d32f2f" stroke-width="2" rx="8"/>
+  <text x="750" y="175" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" font-weight="bold">
+    Validation Failures
+  </text>
+  <text x="750" y="190" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    • MalformedXML
+  </text>
+  <text x="750" y="200" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    • InvalidArgument
+  </text>
+  <text x="750" y="210" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    • InvalidRequest
+  </text>
+  <text x="750" y="220" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    • EntityTooLarge
+  </text>
+  <text x="750" y="235" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    • Duplicate part numbers
+  </text>
+  <text x="750" y="245" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    • Invalid ETag formats
+  </text>
+
+  <!-- Error arrows -->
+  <line x1="300" y1="370" x2="650" y2="200" stroke="#f44336" stroke-width="2" marker-end="url(#errorarrow)"/>
+  <text x="480" y="285" text-anchor="middle" font-family="Arial, sans-serif" font-size="9" fill="#f44336">
+    Validation Error
+  </text>
+
+  <!-- Security benefits -->
+  <rect x="620" y="300" width="240" height="80" fill="#e8f5e8" stroke="#2e7d32" stroke-width="2" rx="8"/>
+  <text x="740" y="315" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" font-weight="bold" fill="#2e7d32">
+    Security Benefits
+  </text>
+  <text x="740" y="330" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    ✓ XXE attack prevention
+  </text>
+  <text x="740" y="340" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    ✓ DoS protection (size limits)
+  </text>
+  <text x="740" y="350" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    ✓ Input validation & sanitization
+  </text>
+  <text x="740" y="360" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    ✓ Provider compatibility
+  </text>
+  <text x="740" y="370" text-anchor="middle" font-family="Arial, sans-serif" font-size="9">
+    ✓ Error code standardization
+  </text>
+
+  <!-- Performance note -->
+  <text x="450" y="470" text-anchor="middle" font-family="Arial, sans-serif" font-size="11" font-weight="bold" fill="#2196f3">
+    Performance: Parallel part uploads, streaming processing, minimal buffering
+  </text>
+
+  <!-- Compatibility note -->
+  <text x="450" y="485" text-anchor="middle" font-family="Arial, sans-serif" font-size="10" fill="#666">
+    Compatible with AWS S3, MinIO, Wasabi, Hetzner (all S3-compatible providers)
+  </text>
+</svg>
