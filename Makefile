@@ -23,6 +23,34 @@ test-integration:
 	@echo "Running integration tests..."
 	@go test -v ./test/... -run TestS3Gateway
 
+# Run load tests for range operations
+test-load-range:
+	@echo "Running range load tests..."
+	@cd test && ./run_load_tests.sh --test-type range
+
+# Run load tests for multipart operations
+test-load-multipart:
+	@echo "Running multipart load tests..."
+	@cd test && ./run_load_tests.sh --test-type multipart
+
+# Run all load tests
+test-load: test-load-range test-load-multipart
+
+# Run load tests and update baselines
+test-load-baseline:
+	@echo "Running load tests and updating baselines..."
+	@cd test && ./run_load_tests.sh --update-baseline
+
+# Run load tests with Prometheus metrics
+test-load-prometheus:
+	@echo "Running load tests with Prometheus metrics..."
+	@cd test && ./run_load_tests.sh --prometheus http://localhost:9090
+
+# Build load test binary
+build-loadtest:
+	@echo "Building load test binary..."
+	@go build -o bin/loadtest ./cmd/loadtest
+
 # Run all tests including integration
 test-all: test test-integration
 
@@ -89,18 +117,24 @@ coverage:
 # Help target
 help:
 	@echo "Available targets:"
-	@echo "  build          - Build the binary"
-	@echo "  test           - Run unit tests"
-	@echo "  test-integration - Run integration tests (requires Docker)"
-	@echo "  test-all       - Run all tests including integration"
-	@echo "  test-coverage  - Run tests with HTML coverage report"
-	@echo "  lint           - Run linter"
-	@echo "  fmt            - Format code"
-	@echo "  clean          - Clean build artifacts"
-	@echo "  run            - Build and run the server"
-	@echo "  docker-build   - Build Docker image"
-	@echo "  docker-push    - Push Docker image"
-	@echo "  security-scan  - Run security vulnerability scan"
-	@echo "  install-tools  - Install development tools"
-	@echo "  coverage       - Generate test coverage report"
-	@echo "  help           - Show this help message"
+	@echo "  build              - Build the binary"
+	@echo "  test               - Run unit tests"
+	@echo "  test-integration   - Run integration tests (requires Docker)"
+	@echo "  test-load          - Run all load tests (range + multipart)"
+	@echo "  test-load-range    - Run range operation load tests"
+	@echo "  test-load-multipart- Run multipart operation load tests"
+	@echo "  test-load-baseline - Run load tests and update baselines"
+	@echo "  test-load-prometheus-Run load tests with Prometheus metrics"
+	@echo "  build-loadtest     - Build load test binary"
+	@echo "  test-all           - Run all tests including integration"
+	@echo "  test-coverage      - Run tests with HTML coverage report"
+	@echo "  lint               - Run linter"
+	@echo "  fmt                - Format code"
+	@echo "  clean              - Clean build artifacts"
+	@echo "  run                - Build and run the server"
+	@echo "  docker-build       - Build Docker image"
+	@echo "  docker-push        - Push Docker image"
+	@echo "  security-scan      - Run security vulnerability scan"
+	@echo "  install-tools      - Install development tools"
+	@echo "  coverage           - Generate test coverage report"
+	@echo "  help               - Show this help message"
