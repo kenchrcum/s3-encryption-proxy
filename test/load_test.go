@@ -306,7 +306,7 @@ func RunStreamingLoadTest(config StreamingLoadTestConfig, logger *logrus.Logger)
 						} else {
 							atomic.AddInt64(&results.SuccessfulReqs, 1)
 							atomic.AddInt64(&results.TotalBytesSent, int64(len(data)))
-							recordLatency(latencies, &latenciesMu, latency, &results.LoadTestResults)
+							recordLatency(&latencies, latenciesMu, latency, &results.LoadTestResults)
 						}
 					} else {
 						// Regular PUT request
@@ -329,7 +329,7 @@ func RunStreamingLoadTest(config StreamingLoadTestConfig, logger *logrus.Logger)
 							atomic.AddInt64(&results.SuccessfulReqs, 1)
 							atomic.AddInt64(&results.TotalBytesSent, int64(len(data)))
 							resp.Body.Close()
-							recordLatency(latencies, &latenciesMu, latency, &results.LoadTestResults)
+							recordLatency(&latencies, latenciesMu, latency, &results.LoadTestResults)
 						}
 					}
 
@@ -371,7 +371,7 @@ func RunStreamingLoadTest(config StreamingLoadTestConfig, logger *logrus.Logger)
 						n, _ := io.Copy(io.Discard, getResp.Body)
 						atomic.AddInt64(&results.TotalBytesRecv, n)
 						getResp.Body.Close()
-						recordLatency(latencies, &latenciesMu, getLatency, &results.LoadTestResults)
+						recordLatency(&latencies, latenciesMu, getLatency, &results.LoadTestResults)
 					}
 
 					requestCount++
