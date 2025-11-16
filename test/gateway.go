@@ -96,7 +96,7 @@ func StartGateway(t *testing.T, cfg *config.Config) *TestGateway {
 
 	// Apply middleware
 	httpHandler := middleware.RecoveryMiddleware(logger)(router)
-	httpHandler = middleware.LoggingMiddleware(logger)(httpHandler)
+	httpHandler = middleware.LoggingMiddleware(logger, &cfg.Logging)(httpHandler)
 
 	// Create HTTP server
 	server := &http.Server{

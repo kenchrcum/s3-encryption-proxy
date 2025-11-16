@@ -717,6 +717,72 @@ defer func() {
 }()
 ```
 
+#### Access Log Configuration
+The gateway supports configurable access logging with multiple formats and sensitive header redaction for security and compliance.
+
+**Configuration Options:**
+```yaml
+logging:
+  access_log_format: "default"  # Options: default, json, clf
+  redact_headers:               # Headers to redact in access logs
+    - "authorization"
+    - "x-amz-security-token"
+    - "x-amz-signature"
+    - "x-encryption-key"
+    - "x-encryption-password"
+```
+
+**Access Log Formats:**
+
+1. **Default Format (Structured Fields):**
+   ```json
+   {
+     "method": "GET",
+     "path": "/bucket/object",
+     "query": "version=1",
+     "remote_addr": "192.168.1.100:54321",
+     "user_agent": "aws-cli/2.0.0",
+     "status": 200,
+     "duration_ms": 150,
+     "bytes": 1024
+   }
+   ```
+
+2. **JSON Format (Complete Request Details):**
+   ```json
+   {
+     "timestamp": "2023-11-16T10:30:45Z",
+     "method": "PUT",
+     "path": "/my-bucket/my-object",
+     "query": "",
+     "remote_addr": "10.0.0.1:44321",
+     "user_agent": "Boto3/1.28.0",
+     "status": 200,
+     "duration_ms": 245,
+     "bytes": 1048576,
+     "headers": {
+       "content-type": "application/octet-stream",
+       "authorization": "[REDACTED]",
+       "x-amz-security-token": "[REDACTED]"
+     }
+   }
+   ```
+
+3. **CLF Format (Apache Common Log Format):**
+   ```
+   192.168.1.100 - - [16/Nov/2023:10:30:45 +0000] "GET /bucket/object HTTP/1.1" 200 1024
+   ```
+
+**Environment Variables:**
+- `LOGGING_ACCESS_LOG_FORMAT`: Set access log format (`default`, `json`, `clf`)
+- `LOGGING_REDACT_HEADERS`: Comma-separated list of headers to redact
+
+**Security Considerations:**
+- Sensitive headers (authorization tokens, encryption keys) are automatically redacted
+- Redaction is case-insensitive and applies to both request and response headers
+- JSON format includes full header information with redaction for compliance auditing
+- CLF format follows standard web server logging for compatibility with existing tools
+
 ### Debug Mode
 ```go
 // Conditional debug logging

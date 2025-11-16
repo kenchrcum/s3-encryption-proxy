@@ -24,6 +24,7 @@ type Config struct {
 	Server       ServerConfig      `yaml:"server"`
 	RateLimit    RateLimitConfig   `yaml:"rate_limit"`
 	Tracing      TracingConfig     `yaml:"tracing"`
+	Logging      LoggingConfig     `yaml:"logging"`
 }
 
 // BackendConfig holds S3 backend configuration.
@@ -118,6 +119,12 @@ type TracingConfig struct {
 	RedactSensitive  bool    `yaml:"redact_sensitive" env:"TRACING_REDACT_SENSITIVE"`   // Redact sensitive data in spans
 }
 
+// LoggingConfig holds access logging configuration.
+type LoggingConfig struct {
+	AccessLogFormat string   `yaml:"access_log_format" env:"LOGGING_ACCESS_LOG_FORMAT"` // Access log format: default, json, clf
+	RedactHeaders   []string `yaml:"redact_headers" env:"LOGGING_REDACT_HEADERS"`       // Headers to redact in access logs (comma-separated)
+}
+
 // LoadConfig loads configuration from a file and environment variables.
 func LoadConfig(path string) (*Config, error) {
 	config := &Config{
@@ -164,6 +171,10 @@ func LoadConfig(path string) (*Config, error) {
 			Exporter:        "stdout",
 			SamplingRatio:   1.0,
 			RedactSensitive: true,
+		},
+		Logging: LoggingConfig{
+			AccessLogFormat: "default",
+			RedactHeaders:   []string{"authorization", "x-amz-security-token", "x-amz-signature", "x-encryption-key", "x-encryption-password"},
 		},
 	}
 
@@ -359,6 +370,17 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("TRACING_REDACT_SENSITIVE"); v != "" {
 		config.Tracing.RedactSensitive = v == "true" || v == "1"
 	}
+	// Logging configuration
+	if v := os.Getenv("LOGGING_ACCESS_LOG_FORMAT"); v != "" {
+		config.Logging.AccessLogFormat = v
+	}
+	if v := os.Getenv("LOGGING_REDACT_HEADERS"); v != "" {
+		// Comma-separated list of headers to redact
+		config.Logging.RedactHeaders = strings.Split(v, ",")
+		for i := range config.Logging.RedactHeaders {
+			config.Logging.RedactHeaders[i] = strings.TrimSpace(config.Logging.RedactHeaders[i])
+		}
+	}
 }
 
 // Validate validates the configuration and returns an error if invalid.
@@ -446,6 +468,18 @@ func (c *Config) Validate() error {
         }
         if c.Tracing.Exporter == "otlp" && c.Tracing.OtlpEndpoint == "" {
             return fmt.Errorf("tracing.otlp_endpoint is required when exporter is otlp")
+        }
+    }
+
+    // Validate logging configuration
+    if c.Logging.AccessLogFormat != "" {
+        validFormats := map[string]bool{
+            "default": true,
+            "json":    true,
+            "clf":     true,
+        }
+        if !validFormats[c.Logging.AccessLogFormat] {
+            return fmt.Errorf("invalid logging.access_log_format: %s (must be default, json, or clf)", c.Logging.AccessLogFormat)
         }
     }
 

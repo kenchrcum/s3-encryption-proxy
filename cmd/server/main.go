@@ -329,7 +329,7 @@ func main() {
 
 	// Apply middleware
 	httpHandler := middleware.RecoveryMiddleware(logger)(router)
-	httpHandler = middleware.LoggingMiddleware(logger)(httpHandler)
+	httpHandler = middleware.LoggingMiddleware(logger, &cfg.Logging)(httpHandler)
 	httpHandler = middleware.SecurityHeadersMiddleware()(httpHandler)
 
 	// Apply tracing middleware if tracing is enabled
