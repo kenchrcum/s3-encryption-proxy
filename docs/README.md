@@ -4,7 +4,7 @@ This directory contains comprehensive documentation for the S3 Encryption Gatewa
 
 ## Getting Started
 
-- **[DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md)** - Complete development setup and coding guidelines
+- **[DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md)** - Complete development setup, coding guidelines, and configuration schema
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** - Docker and Kubernetes deployment instructions
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** - System architecture and design decisions
 

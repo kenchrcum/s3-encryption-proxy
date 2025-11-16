@@ -107,6 +107,427 @@ s3-encryption-gateway/
 - **Interface segregation**: Define interfaces for external dependencies
 - **Error handling**: Centralized error types and handling
 
+## Configuration Schema
+
+This section provides comprehensive documentation for all configuration options available in the S3 Encryption Gateway. Configuration can be provided via YAML file and/or environment variables, with environment variables taking precedence.
+
+### Global Configuration
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `listen_addr` | string | `:8080` | `LISTEN_ADDR` | HTTP server listen address (host:port) |
+| `log_level` | string | `info` | `LOG_LEVEL` | Logging level (debug, info, warn, error) |
+| `proxied_bucket` | string | - | `PROXIED_BUCKET` | Optional: Restrict proxying to this specific bucket only |
+
+### Backend Configuration (`backend`)
+
+S3-compatible backend storage configuration.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `endpoint` | string | - | `BACKEND_ENDPOINT` | S3-compatible API endpoint URL |
+| `region` | string | `us-east-1` | `BACKEND_REGION` | AWS region or provider-specific region |
+| `access_key` | string | - | `BACKEND_ACCESS_KEY` | Backend access key (required unless `use_client_credentials` is true) |
+| `secret_key` | string | - | `BACKEND_SECRET_KEY` | Backend secret key (required unless `use_client_credentials` is true) |
+| `provider` | string | - | `BACKEND_PROVIDER` | Provider name for reference (aws, minio, wasabi, hetzner, etc.) |
+| `use_ssl` | bool | `true` | `BACKEND_USE_SSL` | Use HTTPS for backend connections |
+| `use_path_style` | bool | `false` | `BACKEND_USE_PATH_STYLE` | Use path-style URLs instead of virtual-hosted style |
+| `filter_metadata_keys` | []string | - | `BACKEND_FILTER_METADATA_KEYS` | Comma-separated list of metadata keys to filter out |
+| `use_client_credentials` | bool | `false` | `BACKEND_USE_CLIENT_CREDENTIALS` | Extract and use credentials from client requests |
+
+**Provider Examples:**
+
+```yaml
+# AWS S3
+backend:
+  endpoint: "https://s3.amazonaws.com"
+  region: "us-west-2"
+  provider: "aws"
+
+# MinIO
+backend:
+  endpoint: "http://localhost:9000"
+  region: "us-east-1"
+  provider: "minio"
+  use_ssl: false
+
+# Wasabi
+backend:
+  endpoint: "https://s3.wasabisys.com"
+  region: "us-east-1"
+  provider: "wasabi"
+
+# Hetzner
+backend:
+  endpoint: "https://fsn1.your-objectstorage.com"
+  region: "fsn1"
+  provider: "hetzner"
+```
+
+### Encryption Configuration (`encryption`)
+
+Client-side encryption settings.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `password` | string | - | `ENCRYPTION_PASSWORD` | Encryption password/key (required) |
+| `key_file` | string | - | `ENCRYPTION_KEY_FILE` | Path to key file (alternative to password) |
+| `preferred_algorithm` | string | `AES256-GCM` | `ENCRYPTION_PREFERRED_ALGORITHM` | Preferred encryption algorithm |
+| `supported_algorithms` | []string | `[AES256-GCM, ChaCha20-Poly1305]` | `ENCRYPTION_SUPPORTED_ALGORITHMS` | Comma-separated list of supported algorithms |
+| `chunked_mode` | bool | `true` | `ENCRYPTION_CHUNKED_MODE` | Enable chunked/streaming encryption |
+| `chunk_size` | int | `65536` | `ENCRYPTION_CHUNK_SIZE` | Chunk size in bytes (16KB-1MB) |
+
+**Algorithm Options:**
+- `AES256-GCM`: AES-256 with Galois/Counter Mode (authenticated encryption)
+- `ChaCha20-Poly1305`: ChaCha20 stream cipher with Poly1305 authentication
+
+```yaml
+# Basic encryption setup
+encryption:
+  password: "your-secure-password-here"
+  preferred_algorithm: "AES256-GCM"
+  supported_algorithms:
+    - "AES256-GCM"
+    - "ChaCha20-Poly1305"
+  chunked_mode: true
+  chunk_size: 65536  # 64KB chunks
+
+# Key file authentication
+encryption:
+  key_file: "/path/to/encryption.key"
+  preferred_algorithm: "AES256-GCM"
+```
+
+### Key Manager Configuration (`encryption.key_manager`)
+
+Key management and rotation settings.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `enabled` | bool | `false` | `KEY_MANAGER_ENABLED` | Enable key rotation/KMS mode |
+
+```yaml
+# Enable key management (future feature)
+encryption:
+  key_manager:
+    enabled: false  # Currently single password mode only
+```
+
+### Compression Configuration (`compression`)
+
+Optional compression before encryption.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `enabled` | bool | `false` | `COMPRESSION_ENABLED` | Enable compression before encryption |
+| `min_size` | int64 | `1024` | `COMPRESSION_MIN_SIZE` | Minimum object size for compression (bytes) |
+| `content_types` | []string | `[text/plain, application/json, application/xml]` | `COMPRESSION_CONTENT_TYPES` | Content types to compress |
+| `algorithm` | string | `gzip` | `COMPRESSION_ALGORITHM` | Compression algorithm (gzip, deflate) |
+| `level` | int | `6` | `COMPRESSION_LEVEL` | Compression level (1-9, gzip-specific) |
+
+```yaml
+# Enable compression for text-based content
+compression:
+  enabled: true
+  min_size: 1024  # Only compress objects > 1KB
+  content_types:
+    - "text/plain"
+    - "application/json"
+    - "application/xml"
+    - "text/html"
+    - "application/javascript"
+  algorithm: "gzip"
+  level: 6  # Balanced compression ratio/speed
+```
+
+### Server Configuration (`server`)
+
+HTTP server settings and timeouts.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `read_timeout` | duration | `15s` | `SERVER_READ_TIMEOUT` | Maximum time to read entire request |
+| `write_timeout` | duration | `15s` | `SERVER_WRITE_TIMEOUT` | Maximum time to write response |
+| `idle_timeout` | duration | `60s` | `SERVER_IDLE_TIMEOUT` | Maximum idle connection time |
+| `read_header_timeout` | duration | `10s` | `SERVER_READ_HEADER_TIMEOUT` | Time to read request headers |
+| `max_header_bytes` | int | `1048576` | `SERVER_MAX_HEADER_BYTES` | Maximum header size (bytes) |
+| `disable_multipart_uploads` | bool | `false` | `SERVER_DISABLE_MULTIPART_UPLOADS` | Disable multipart uploads entirely |
+
+**Duration Format:** Go duration strings (e.g., `30s`, `5m`, `1h30m`)
+
+```yaml
+# Production server settings
+server:
+  read_timeout: "30s"
+  write_timeout: "30s"
+  idle_timeout: "120s"
+  read_header_timeout: "10s"
+  max_header_bytes: 1048576  # 1MB
+  disable_multipart_uploads: false
+```
+
+### TLS Configuration (`tls`)
+
+HTTPS/TLS settings.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `enabled` | bool | `false` | `TLS_ENABLED` | Enable HTTPS/TLS |
+| `cert_file` | string | - | `TLS_CERT_FILE` | Path to TLS certificate file |
+| `key_file` | string | - | `TLS_KEY_FILE` | Path to TLS private key file |
+
+```yaml
+# Enable TLS
+tls:
+  enabled: true
+  cert_file: "/etc/ssl/certs/gateway.crt"
+  key_file: "/etc/ssl/private/gateway.key"
+```
+
+### Rate Limiting Configuration (`rate_limit`)
+
+Request rate limiting.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `enabled` | bool | `false` | `RATE_LIMIT_ENABLED` | Enable rate limiting |
+| `limit` | int | `100` | `RATE_LIMIT_REQUESTS` | Maximum requests per time window |
+| `window` | duration | `60s` | `RATE_LIMIT_WINDOW` | Time window for rate limiting |
+
+```yaml
+# Rate limiting (100 requests per minute)
+rate_limit:
+  enabled: true
+  limit: 100
+  window: "60s"
+```
+
+### Cache Configuration (`cache`)
+
+In-memory caching for encrypted objects.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `enabled` | bool | `false` | `CACHE_ENABLED` | Enable in-memory caching |
+| `max_size` | int64 | `104857600` | `CACHE_MAX_SIZE` | Maximum cache size (bytes) |
+| `max_items` | int | `1000` | `CACHE_MAX_ITEMS` | Maximum number of cached items |
+| `default_ttl` | duration | `5m` | `CACHE_DEFAULT_TTL` | Default time-to-live for cache entries |
+
+```yaml
+# Enable caching for frequently accessed objects
+cache:
+  enabled: true
+  max_size: 1073741824  # 1GB
+  max_items: 5000
+  default_ttl: "10m"
+```
+
+### Audit Configuration (`audit`)
+
+Audit logging for compliance.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `enabled` | bool | `false` | `AUDIT_ENABLED` | Enable audit logging |
+| `max_events` | int | `10000` | `AUDIT_MAX_EVENTS` | Maximum audit events to keep in memory |
+
+```yaml
+# Enable audit logging
+audit:
+  enabled: true
+  max_events: 50000
+```
+
+### Tracing Configuration (`tracing`)
+
+OpenTelemetry distributed tracing.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `enabled` | bool | `false` | `TRACING_ENABLED` | Enable distributed tracing |
+| `service_name` | string | `s3-encryption-gateway` | `TRACING_SERVICE_NAME` | Service name for traces |
+| `service_version` | string | `dev` | `TRACING_SERVICE_VERSION` | Service version |
+| `exporter` | string | `stdout` | `TRACING_EXPORTER` | Trace exporter (stdout, jaeger, otlp) |
+| `jaeger_endpoint` | string | - | `TRACING_JAEGER_ENDPOINT` | Jaeger collector endpoint |
+| `otlp_endpoint` | string | - | `TRACING_OTLP_ENDPOINT` | OTLP gRPC endpoint |
+| `sampling_ratio` | float64 | `1.0` | `TRACING_SAMPLING_RATIO` | Sampling ratio (0.0-1.0) |
+| `redact_sensitive` | bool | `true` | `TRACING_REDACT_SENSITIVE` | Redact sensitive data in spans |
+
+```yaml
+# Jaeger tracing
+tracing:
+  enabled: true
+  service_name: "s3-encryption-gateway"
+  service_version: "v1.0.0"
+  exporter: "jaeger"
+  jaeger_endpoint: "http://jaeger:14268/api/traces"
+  sampling_ratio: 0.1  # 10% sampling
+  redact_sensitive: true
+
+# OTLP tracing
+tracing:
+  enabled: true
+  service_name: "s3-encryption-gateway"
+  exporter: "otlp"
+  otlp_endpoint: "otel-collector:4317"
+  sampling_ratio: 0.05  # 5% sampling
+```
+
+### Logging Configuration (`logging`)
+
+Access logging settings.
+
+| Field | Type | Default | Environment Variable | Description |
+|-------|------|---------|---------------------|-------------|
+| `access_log_format` | string | `default` | `LOGGING_ACCESS_LOG_FORMAT` | Access log format (default, json, clf) |
+| `redact_headers` | []string | `[authorization, x-amz-security-token, x-amz-signature, x-encryption-key, x-encryption-password]` | `LOGGING_REDACT_HEADERS` | Headers to redact in access logs |
+
+```yaml
+# JSON access logging with custom redaction
+logging:
+  access_log_format: "json"
+  redact_headers:
+    - "authorization"
+    - "x-amz-security-token"
+    - "x-amz-signature"
+    - "x-encryption-key"
+    - "x-encryption-password"
+    - "x-custom-auth"
+```
+
+### Complete Configuration Example
+
+```yaml
+# Complete configuration example for production deployment
+listen_addr: ":8443"
+log_level: "info"
+proxied_bucket: ""  # Optional bucket restriction
+
+backend:
+  endpoint: "https://s3.us-west-2.amazonaws.com"
+  region: "us-west-2"
+  access_key: ""  # Set via BACKEND_ACCESS_KEY
+  secret_key: ""  # Set via BACKEND_SECRET_KEY
+  provider: "aws"
+  use_ssl: true
+  use_path_style: false
+  filter_metadata_keys: []
+  use_client_credentials: false
+
+encryption:
+  password: ""  # Set via ENCRYPTION_PASSWORD
+  preferred_algorithm: "AES256-GCM"
+  supported_algorithms:
+    - "AES256-GCM"
+    - "ChaCha20-Poly1305"
+  chunked_mode: true
+  chunk_size: 65536
+  key_manager:
+    enabled: false
+
+compression:
+  enabled: true
+  min_size: 1024
+  content_types:
+    - "text/plain"
+    - "application/json"
+    - "application/xml"
+    - "text/html"
+  algorithm: "gzip"
+  level: 6
+
+server:
+  read_timeout: "30s"
+  write_timeout: "30s"
+  idle_timeout: "120s"
+  read_header_timeout: "10s"
+  max_header_bytes: 1048576
+  disable_multipart_uploads: false
+
+tls:
+  enabled: true
+  cert_file: "/etc/ssl/certs/gateway.crt"
+  key_file: "/etc/ssl/private/gateway.key"
+
+rate_limit:
+  enabled: true
+  limit: 1000
+  window: "60s"
+
+cache:
+  enabled: true
+  max_size: 1073741824  # 1GB
+  max_items: 5000
+  default_ttl: "10m"
+
+audit:
+  enabled: true
+  max_events: 50000
+
+tracing:
+  enabled: true
+  service_name: "s3-encryption-gateway"
+  service_version: "v1.0.0"
+  exporter: "otlp"
+  otlp_endpoint: "otel-collector:4317"
+  sampling_ratio: 0.1
+  redact_sensitive: true
+
+logging:
+  access_log_format: "json"
+  redact_headers:
+    - "authorization"
+    - "x-amz-security-token"
+    - "x-amz-signature"
+    - "x-encryption-key"
+    - "x-encryption-password"
+```
+
+### Environment Variables Only Example
+
+```bash
+# Minimal configuration using environment variables only
+export LISTEN_ADDR=":8080"
+export LOG_LEVEL="info"
+export BACKEND_ENDPOINT="https://s3.amazonaws.com"
+export BACKEND_REGION="us-east-1"
+export BACKEND_ACCESS_KEY="your-access-key"
+export BACKEND_SECRET_KEY="your-secret-key"
+export ENCRYPTION_PASSWORD="your-encryption-password"
+export TLS_ENABLED="true"
+export TLS_CERT_FILE="/path/to/cert.pem"
+export TLS_KEY_FILE="/path/to/key.pem"
+```
+
+### Configuration Validation
+
+The gateway validates configuration on startup and provides detailed error messages for invalid settings:
+
+- **Required fields**: `listen_addr`, encryption password or key file, backend credentials (unless using client credentials)
+- **Valid ranges**: Log levels, algorithm names, chunk sizes (16KB-1MB), sampling ratios (0.0-1.0)
+- **Dependencies**: TLS requires certificate and key files, tracing exporters require endpoints
+- **Security**: Sensitive values are not logged in validation errors
+
+### Configuration Hot-Reload
+
+The gateway supports hot-reloading of non-crypto configuration settings via SIGHUP signal or file watcher. Crypto settings (passwords, algorithms, chunking) require restart to change.
+
+**Reloadable Settings:**
+- Server timeouts and limits
+- Rate limiting
+- Caching
+- Auditing
+- Tracing
+- Logging
+- TLS settings (certificate rotation)
+
+**Non-reloadable Settings:**
+- Encryption passwords/keys
+- Encryption algorithms
+- Chunked mode settings
+- Backend provider/endpoint
+- Compression settings
+
 ## Coding Standards
 
 ### Go Code Style
