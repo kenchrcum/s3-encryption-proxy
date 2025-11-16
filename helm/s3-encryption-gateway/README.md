@@ -153,8 +153,23 @@ config:
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `config.tls.enabled` | Enable TLS | `"false"` |
-| `config.tls.certFile` | TLS certificate file path | `""` |
-| `config.tls.keyFile` | TLS key file path | `""` |
+| `config.tls.useCertManager` | Use cert-manager for automatic certificates | `"false"` |
+| `config.tls.certFile` | TLS certificate file path (when not using cert-manager) | `""` |
+| `config.tls.keyFile` | TLS key file path (when not using cert-manager) | `""` |
+
+#### cert-manager Configuration
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `certManager.issuer.name` | Name for the issuer | `""` |
+| `certManager.issuer.namespace` | Namespace for the issuer | `""` |
+| `certManager.issuer.selfSigned` | Self-signed issuer configuration | `{}` |
+| `certManager.issuer.clusterIssuer` | Use ClusterIssuer (alternative to selfSigned) | `""` |
+| `certManager.certificate.extraDNSNames` | Additional DNS names for certificate | `[]` |
+| `certManager.certificate.duration` | Certificate validity duration | `"2160h"` |
+| `certManager.certificate.renewBefore` | Renew before expiry | `"720h"` |
+
+**cert-manager Integration**: When `config.tls.useCertManager` is enabled, the chart automatically creates Issuer and Certificate resources. A self-signed certificate is created by default, but you can configure Let's Encrypt or other issuers. The TLS certificate and key files are automatically mounted into the pod.
 
 #### Rate Limiting
 
@@ -180,6 +195,25 @@ config:
 | `config.audit.enabled` | Enable audit logging | `"false"` |
 | `config.audit.maxEvents` | Maximum audit events | `"10000"` |
 
+#### Ingress Configuration
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `ingress.enabled` | Enable Ingress creation | `false` |
+| `ingress.className` | Ingress class name | `""` |
+| `ingress.annotations` | Additional ingress annotations | `{}` |
+| `ingress.hosts` | List of ingress hosts and paths | `[]` |
+| `ingress.tls` | TLS configuration for ingress | `[]` |
+
+**Common Ingress Annotations**: The chart supports common ingress controller annotations. Some examples:
+- `kubernetes.io/ingress.class: nginx`
+- `cert-manager.io/cluster-issuer: letsencrypt-prod`
+- `nginx.ingress.kubernetes.io/ssl-redirect: "true"`
+- `nginx.ingress.kubernetes.io/proxy-body-size: "0"`
+- `nginx.ingress.kubernetes.io/proxy-read-timeout: "600"`
+
+**Note**: When `config.tls.enabled.value` is `true`, SSL redirect annotations are automatically added to force HTTPS traffic.
+
 #### Deployment Configuration
 
 | Parameter | Description | Default |
@@ -188,6 +222,10 @@ config:
 | `image.repository` | Image repository | `kenchrcum/s3-encryption-gateway` |
 | `image.tag` | Image tag | `"0.3.10"` |
 | `image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `imagePullSecrets` | Image pull secrets | `[]` |
+| `podAnnotations` | Additional pod annotations | `{}` |
+| `podSecurityContext` | Pod security context | See values.yaml |
+| `securityContext` | Container security context | See values.yaml |
 | `service.enabled` | Enable Service creation | `true` |
 | `service.type` | Service type | `ClusterIP` |
 | `service.port` | Service port (only used when TLS is disabled) | `80` |
@@ -196,7 +234,13 @@ config:
 **Note**: When `config.tls.enabled.value` is `true`, the Service automatically uses port `443` with port name `https` instead of the configured `service.port`. This ensures proper HTTPS service discovery (e.g., `https://service-name.namespace.svc.cluster.local:443`).
 | `resources` | Resource requests/limits | See values.yaml |
 | `autoscaling.enabled` | Enable HPA | `false` |
-| `serviceMonitor.enabled` | Enable ServiceMonitor | `false` |
+| `podDisruptionBudget.enabled` | Enable PodDisruptionBudget | `false` |
+| `podDisruptionBudget.minAvailable` | Minimum available pods during disruption | `""` |
+| `podDisruptionBudget.maxUnavailable` | Maximum unavailable pods during disruption | `""` |
+| `topologySpreadConstraints` | Pod topology spread constraints | `[]` |
+| `nodeSelector` | Node selector labels | `{}` |
+| `tolerations` | Pod tolerations | `[]` |
+| `affinity` | Pod affinity/anti-affinity rules | `{}` |
 
 #### Service Account
 
@@ -204,6 +248,23 @@ config:
 |-----------|-------------|---------|
 | `serviceAccount.create` | Create a ServiceAccount | `true` |
 | `serviceAccount.name` | Use existing ServiceAccount name (when create=false uses this; when create=true overrides generated name) | `""` |
+
+#### Monitoring
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `serviceMonitor.enabled` | Enable ServiceMonitor (Prometheus Operator) | `false` |
+| `serviceMonitor.interval` | Scrape interval | `30s` |
+| `serviceMonitor.scrapeTimeout` | Scrape timeout | `10s` |
+| `serviceMonitor.labels` | Additional ServiceMonitor labels | `{}` |
+| `podMonitor.enabled` | Enable PodMonitor (Prometheus Operator) | `false` |
+| `podMonitor.interval` | Scrape interval | `30s` |
+| `podMonitor.scrapeTimeout` | Scrape timeout | `10s` |
+| `podMonitor.labels` | Additional PodMonitor labels | `{}` |
+
+**ServiceMonitor vs PodMonitor**: Both ServiceMonitor and PodMonitor provide Prometheus metrics collection but target different Kubernetes resources:
+- **ServiceMonitor**: Targets the Service (recommended for most deployments)
+- **PodMonitor**: Targets pods directly (useful when Service is disabled or for advanced pod-level metrics)
 
 #### Network Policy
 
@@ -493,6 +554,85 @@ serviceMonitor:
   scrapeTimeout: 10s
   labels:
     prometheus: kube-prometheus
+```
+
+### With Ingress
+
+```yaml
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: s3-gateway.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: s3-gateway-tls
+      hosts:
+        - s3-gateway.example.com
+```
+
+### With Pod Disruption Budget
+
+```yaml
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  # Alternative: maxUnavailable: 50%
+```
+
+### With Topology Spread Constraints
+
+```yaml
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: s3-encryption-gateway
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: ScheduleAnyway
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: s3-encryption-gateway
+```
+
+### With PodMonitor (Alternative to ServiceMonitor)
+
+```yaml
+podMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  labels:
+    prometheus: kube-prometheus
+```
+
+### With cert-manager TLS
+
+```yaml
+config:
+  tls:
+    enabled: "true"
+    useCertManager: "true"
+
+certManager:
+  issuer:
+    name: s3-gateway-issuer
+    selfSigned: {}
+    # Or use Let's Encrypt:
+    # clusterIssuer: letsencrypt-prod
+  certificate:
+    extraDNSNames:
+      - s3-gateway.internal.example.com
+    duration: "2160h"
+    renewBefore: "720h"
 ```
 
 ### Without Service

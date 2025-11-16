@@ -43,6 +43,28 @@ service:
   port: 80
   targetPort: 8080
 
+# Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  annotations:
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+    # nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    # nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+  hosts:
+    - host: s3-encryption-gateway.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: s3-encryption-gateway-tls
+  #    hosts:
+  #      - s3-encryption-gateway.local
+
 # Configuration - supports both direct values and valueFrom (secrets/configmaps)
 # Each option can be configured as:
 #   - Direct value: value: "my-value"
@@ -361,8 +383,23 @@ autoscaling:
         periodSeconds: 15
       selectPolicy: Max
 
+# Pod Disruption Budget
+podDisruptionBudget:
+  enabled: false
+  # minAvailable: 1
+  # maxUnavailable: 50%
+  minAvailable: ""
+  maxUnavailable: ""
+
 # Prometheus ServiceMonitor (requires Prometheus Operator)
 serviceMonitor:
+  enabled: false
+  interval: 30s
+  scrapeTimeout: 10s
+  labels: {}
+
+# Prometheus PodMonitor (alternative to ServiceMonitor, requires Prometheus Operator)
+podMonitor:
   enabled: false
   interval: 30s
   scrapeTimeout: 10s
@@ -393,4 +430,21 @@ nodeSelector: {}
 tolerations: []
 
 affinity: {}
+
+# Topology spread constraints for pod distribution
+topologySpreadConstraints: []
+# Example:
+# topologySpreadConstraints:
+#   - maxSkew: 1
+#     topologyKey: kubernetes.io/hostname
+#     whenUnsatisfiable: DoNotSchedule
+#     labelSelector:
+#       matchLabels:
+#         app.kubernetes.io/name: s3-encryption-gateway
+#   - maxSkew: 1
+#     topologyKey: topology.kubernetes.io/zone
+#     whenUnsatisfiable: ScheduleAnyway
+#     labelSelector:
+#       matchLabels:
+#         app.kubernetes.io/name: s3-encryption-gateway
 

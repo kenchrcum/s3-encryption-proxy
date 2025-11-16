@@ -1,0 +1,52 @@
+{{- if .Values.ingress.enabled -}}
+{{- $fullName := include "s3-encryption-gateway.fullname" . -}}
+{{- $svcPort := .Values.service.port -}}
+{{- if and .Values.ingress.className (not (hasKey .Values.ingress.annotations "kubernetes.io/ingress.class")) }}
+  {{- $_ := set .Values.ingress.annotations "kubernetes.io/ingress.class" .Values.ingress.className}}
+{{- end }}
+{{- if and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (not (hasKey .Values.ingress.annotations "nginx.ingress.kubernetes.io/ssl-redirect")) }}
+  {{- $_ := set .Values.ingress.annotations "nginx.ingress.kubernetes.io/ssl-redirect" "true" }}
+{{- end }}
+{{- if and (or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1")) (not (hasKey .Values.ingress.annotations "nginx.ingress.kubernetes.io/force-ssl-redirect")) }}
+  {{- $_ := set .Values.ingress.annotations "nginx.ingress.kubernetes.io/force-ssl-redirect" "true" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $fullName }}
+  labels:
+    {{- include "s3-encryption-gateway.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- if .Values.ingress.className }}
+  ingressClassName: {{ .Values.ingress.className }}
+  {{- end }}
+  {{- if .Values.ingress.tls }}
+  tls:
+    {{- range .Values.ingress.tls }}
+    - hosts:
+        {{- range .hosts }}
+        - {{ . | quote }}
+        {{- end }}
+      secretName: {{ .secretName }}
+    {{- end }}
+  {{- end }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range .paths }}
+          - path: {{ .path }}
+            pathType: {{ .pathType }}
+            backend:
+              service:
+                name: {{ $fullName }}
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
+    {{- end }}
+{{- end }}

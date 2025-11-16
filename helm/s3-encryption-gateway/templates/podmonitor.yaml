@@ -1,0 +1,29 @@
+{{- if .Values.podMonitor.enabled }}
+{{- $tlsEnabled := false }}
+{{- if or (eq .Values.config.tls.enabled.value "true") (eq .Values.config.tls.enabled.value "1") }}
+  {{- $tlsEnabled = true }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "s3-encryption-gateway.fullname" . }}
+  labels:
+    {{- include "s3-encryption-gateway.labels" . | nindent 4 }}
+    {{- with .Values.podMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "s3-encryption-gateway.selectorLabels" . | nindent 6 }}
+  podMetricsEndpoints:
+  - port: {{ if $tlsEnabled }}https{{ else }}http{{ end }}
+    path: /metrics
+    interval: {{ .Values.podMonitor.interval }}
+    scrapeTimeout: {{ .Values.podMonitor.scrapeTimeout }}
+    {{- if $tlsEnabled }}
+    scheme: HTTPS
+    tlsConfig:
+      insecureSkipVerify: true
+    {{- end }}
+{{- end }}
