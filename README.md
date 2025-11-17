@@ -229,6 +229,29 @@ COMPRESSION_ENABLED=true
 CACHE_ENABLED=true
 ```
 
+### External Key Manager (Cosmian)
+
+To exercise the new envelope-encryption flow you can point the gateway at a Cosmian KMIP server (self-hosted via Docker or another environment):
+
+```yaml
+encryption:
+  password: "fallback-password-used-for-pre-existing-objects"
+  key_manager:
+    enabled: true
+    provider: cosmian
+    dual_read_window: 1
+    cosmian:
+      endpoint: "127.0.0.1:5696"
+      keys:
+        - id: "wrapping-key-1"
+          version: 1
+      ca_cert: "/etc/cosmian/ca.pem"
+      client_cert: "/etc/cosmian/client.crt"
+      client_key: "/etc/cosmian/client.key"
+```
+
+Only Cosmian has been validated in CI for v0.5 (see [`docs/KMS_COMPATIBILITY.md`](docs/KMS_COMPATIBILITY.md) for details and a link to Cosmian's install guide). AWS KMS and Vault Transit adapters share the same interface but have not yet been tested end-to-end.
+
 ## Kubernetes Deployment
 
 The gateway includes Helm charts for easy Kubernetes deployment. See the [Helm chart documentation](helm/s3-encryption-gateway/README.md) for detailed deployment instructions.

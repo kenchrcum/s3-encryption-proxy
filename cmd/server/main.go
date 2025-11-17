@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -36,23 +39,23 @@ var (
 
 // ConfigChangeApplier holds references to components that can be updated during hot reload
 type ConfigChangeApplier struct {
-	logger        *logrus.Logger
+	logger         *logrus.Logger
 	tracerProvider *sdktrace.TracerProvider
-	RateLimiter   *middleware.RateLimiter
-	cache         cache.Cache
-	auditLogger   audit.Logger
-	config        *config.Config
+	RateLimiter    *middleware.RateLimiter
+	cache          cache.Cache
+	auditLogger    audit.Logger
+	config         *config.Config
 }
 
 // NewConfigChangeApplier creates a new applier for configuration changes
 func NewConfigChangeApplier(logger *logrus.Logger, tracerProvider *sdktrace.TracerProvider, rateLimiter *middleware.RateLimiter, cache cache.Cache, auditLogger audit.Logger, initialConfig *config.Config) *ConfigChangeApplier {
 	return &ConfigChangeApplier{
-		logger:        logger,
+		logger:         logger,
 		tracerProvider: tracerProvider,
-		RateLimiter:   rateLimiter,
-		cache:         cache,
-		auditLogger:   auditLogger,
-		config:        initialConfig,
+		RateLimiter:    rateLimiter,
+		cache:          cache,
+		auditLogger:    auditLogger,
+		config:         initialConfig,
 	}
 }
 
@@ -103,14 +106,14 @@ func (a *ConfigChangeApplier) ApplyConfigChanges(oldConfig, newConfig *config.Co
 		// Note: Cache reconfiguration is complex and may not be safe for existing entries
 		// For now, we'll log the change but not apply it
 		a.logger.WithFields(logrus.Fields{
-			"old_enabled": oldConfig.Cache.Enabled,
-			"new_enabled": newConfig.Cache.Enabled,
-			"old_max_size": oldConfig.Cache.MaxSize,
-			"new_max_size": newConfig.Cache.MaxSize,
+			"old_enabled":   oldConfig.Cache.Enabled,
+			"new_enabled":   newConfig.Cache.Enabled,
+			"old_max_size":  oldConfig.Cache.MaxSize,
+			"new_max_size":  newConfig.Cache.MaxSize,
 			"old_max_items": oldConfig.Cache.MaxItems,
 			"new_max_items": newConfig.Cache.MaxItems,
-			"old_ttl": oldConfig.Cache.DefaultTTL,
-			"new_ttl": newConfig.Cache.DefaultTTL,
+			"old_ttl":       oldConfig.Cache.DefaultTTL,
+			"new_ttl":       newConfig.Cache.DefaultTTL,
 		}).Warn("Cache configuration changed - restart required for changes to take effect")
 
 		changes = append(changes, "cache: configuration changed (restart required)")
@@ -123,8 +126,8 @@ func (a *ConfigChangeApplier) ApplyConfigChanges(oldConfig, newConfig *config.Co
 		// Note: Changing audit settings during runtime is complex
 		// For now, we'll log the change but not apply it
 		a.logger.WithFields(logrus.Fields{
-			"old_enabled": oldConfig.Audit.Enabled,
-			"new_enabled": newConfig.Audit.Enabled,
+			"old_enabled":    oldConfig.Audit.Enabled,
+			"new_enabled":    newConfig.Audit.Enabled,
 			"old_max_events": oldConfig.Audit.MaxEvents,
 			"new_max_events": newConfig.Audit.MaxEvents,
 		}).Warn("Audit configuration changed - restart required for changes to take effect")
@@ -170,9 +173,9 @@ func (a *ConfigChangeApplier) ApplyConfigChanges(oldConfig, newConfig *config.Co
 		oldConfig.Server.DisableMultipartUploads != newConfig.Server.DisableMultipartUploads {
 
 		a.logger.WithFields(logrus.Fields{
-			"read_timeout": newConfig.Server.ReadTimeout,
+			"read_timeout":  newConfig.Server.ReadTimeout,
 			"write_timeout": newConfig.Server.WriteTimeout,
-			"idle_timeout": newConfig.Server.IdleTimeout,
+			"idle_timeout":  newConfig.Server.IdleTimeout,
 		}).Warn("Server configuration changed - restart required for changes to take effect")
 
 		changes = append(changes, "server: timeouts/configuration changed (restart required)")
@@ -277,6 +280,89 @@ func InitTracing(cfg config.TracingConfig, logger *logrus.Logger) (*sdktrace.Tra
 	return tp, nil
 }
 
+func buildKeyManager(cfg *config.Config, logger *logrus.Logger) (crypto.KeyManager, error) {
+	provider := strings.ToLower(cfg.Encryption.KeyManager.Provider)
+	if provider == "" {
+		provider = "cosmian"
+	}
+
+	switch provider {
+	case "cosmian", "kmip":
+		return newCosmianKeyManager(cfg.Encryption.KeyManager, logger)
+	default:
+		return nil, fmt.Errorf("unsupported key manager provider %q", provider)
+	}
+}
+
+func newCosmianKeyManager(kmCfg config.KeyManagerConfig, logger *logrus.Logger) (crypto.KeyManager, error) {
+	if kmCfg.Cosmian.Endpoint == "" {
+		return nil, fmt.Errorf("cosmian.key_manager.endpoint is required")
+	}
+	if len(kmCfg.Cosmian.Keys) == 0 {
+		return nil, fmt.Errorf("cosmian.key_manager.keys must include at least one wrapping key reference")
+	}
+
+	tlsCfg, err := buildCosmianTLSConfig(kmCfg.Cosmian)
+	if err != nil {
+		return nil, err
+	}
+
+	keyRefs := make([]crypto.KMIPKeyReference, 0, len(kmCfg.Cosmian.Keys))
+	for i, key := range kmCfg.Cosmian.Keys {
+		if key.ID == "" {
+			return nil, fmt.Errorf("cosmian.key_manager.keys[%d].id is required", i)
+		}
+		version := key.Version
+		if version == 0 {
+			version = i + 1
+		}
+		keyRefs = append(keyRefs, crypto.KMIPKeyReference{
+			ID:      key.ID,
+			Version: version,
+		})
+	}
+
+	opts := crypto.CosmianKMIPOptions{
+		Endpoint:       kmCfg.Cosmian.Endpoint,
+		Keys:           keyRefs,
+		TLSConfig:      tlsCfg,
+		Timeout:        kmCfg.Cosmian.Timeout,
+		Provider:       "cosmian-kmip",
+		DualReadWindow: kmCfg.DualReadWindow,
+	}
+
+	return crypto.NewCosmianKMIPManager(opts)
+}
+
+func buildCosmianTLSConfig(cfg config.CosmianConfig) (*tls.Config, error) {
+	tlsCfg := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+	}
+
+	if cfg.CACert != "" {
+		caData, err := os.ReadFile(cfg.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read Cosmian CA certificate: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caData) {
+			return nil, fmt.Errorf("failed to parse Cosmian CA certificate")
+		}
+		tlsCfg.RootCAs = pool
+	}
+
+	if cfg.ClientCert != "" && cfg.ClientKey != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.ClientCert, cfg.ClientKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load Cosmian client certificate: %w", err)
+		}
+		tlsCfg.Certificates = append(tlsCfg.Certificates, cert)
+	}
+
+	return tlsCfg, nil
+}
+
 func main() {
 	// Initialize logger
 	logger := logrus.New()
@@ -321,8 +407,8 @@ func main() {
 			}
 		}()
 		logger.WithFields(logrus.Fields{
-			"exporter": cfg.Tracing.Exporter,
-			"service_name": cfg.Tracing.ServiceName,
+			"exporter":       cfg.Tracing.Exporter,
+			"service_name":   cfg.Tracing.ServiceName,
 			"sampling_ratio": cfg.Tracing.SamplingRatio,
 		}).Info("Tracing initialized")
 	}
@@ -365,28 +451,21 @@ func main() {
 		logger.Fatal("Encryption password is required (set ENCRYPTION_PASSWORD or encryption.password)")
 	}
 
-	// Key Manager is optional - use it only if explicitly enabled via config
-	// This maintains backward compatibility with single password mode
-	var activePassword string
+	activePassword := encryptionPassword
 	if cfg.Encryption.KeyManager.Enabled {
-		// Initialize key manager (Phase 5 feature - KMS mode)
-		keyManager, err = crypto.NewKeyManager(encryptionPassword)
+		keyManager, err = buildKeyManager(cfg, logger)
 		if err != nil {
-			logger.WithError(err).Fatal("Failed to create key manager")
+			logger.WithError(err).Fatal("Failed to initialize key manager")
 		}
-
-		// Get active key from key manager
-		var keyVersion int
-		activePassword, keyVersion, err = keyManager.GetActiveKey()
-		if err != nil {
-			logger.WithError(err).Fatal("Failed to get active key")
-		}
+		defer func() {
+			if err := keyManager.Close(context.Background()); err != nil {
+				logger.WithError(err).Warn("Failed to close key manager cleanly")
+			}
+		}()
 		logger.WithFields(logrus.Fields{
-			"key_version": keyVersion,
-		}).Info("Key manager (KMS mode) initialized")
+			"provider": strings.ToLower(cfg.Encryption.KeyManager.Provider),
+		}).Info("External key manager initialized")
 	} else {
-		// Single password mode (backward compatible)
-		activePassword = encryptionPassword
 		logger.Info("Using single password mode (no key rotation)")
 	}
 
@@ -414,63 +493,41 @@ func main() {
 		"architecture":         hwInfo["architecture"],
 	}).Info("Hardware acceleration status")
 
-    // Initialize encryption engine with compression, algorithm support, chunked mode, and key resolver (if KMS mode)
-    var encryptionEngine crypto.EncryptionEngine
-    
-    // Default to chunked mode enabled unless explicitly disabled
-    chunkedMode := cfg.Encryption.ChunkedMode
-    if !cfg.Encryption.ChunkedMode && cfg.Encryption.ChunkSize == 0 {
-        // If neither is set, default to enabled for new installations
-        chunkedMode = true
-    }
-    
-    chunkSize := cfg.Encryption.ChunkSize
-    if chunkSize == 0 {
-        chunkSize = crypto.DefaultChunkSize
-    }
-    
-    if cfg.Encryption.KeyManager.Enabled {
-        resolver := func(version int) (string, bool) {
-            if keyManager == nil {
-                return "", false
-            }
-            pass, err := keyManager.GetKeyVersion(version)
-            if err != nil || pass == "" {
-                return "", false
-            }
-            return pass, true
-        }
-        // Create engine with chunking, then set resolver
-        encryptionEngine, err = crypto.NewEngineWithChunking(
-            activePassword,
-            compressionEngine,
-            cfg.Encryption.PreferredAlgorithm,
-            cfg.Encryption.SupportedAlgorithms,
-            chunkedMode,
-            chunkSize,
-        )
-        if err == nil {
-            crypto.SetKeyResolver(encryptionEngine, resolver)
-        }
-    } else {
-        encryptionEngine, err = crypto.NewEngineWithChunking(
-            activePassword,
-            compressionEngine,
-            cfg.Encryption.PreferredAlgorithm,
-            cfg.Encryption.SupportedAlgorithms,
-            chunkedMode,
-            chunkSize,
-        )
-    }
+	// Initialize encryption engine with compression, algorithm support, chunked mode, and key resolver (if KMS mode)
+	var encryptionEngine crypto.EncryptionEngine
+
+	// Default to chunked mode enabled unless explicitly disabled
+	chunkedMode := cfg.Encryption.ChunkedMode
+	if !cfg.Encryption.ChunkedMode && cfg.Encryption.ChunkSize == 0 {
+		// If neither is set, default to enabled for new installations
+		chunkedMode = true
+	}
+
+	chunkSize := cfg.Encryption.ChunkSize
+	if chunkSize == 0 {
+		chunkSize = crypto.DefaultChunkSize
+	}
+
+	encryptionEngine, err = crypto.NewEngineWithChunking(
+		activePassword,
+		compressionEngine,
+		cfg.Encryption.PreferredAlgorithm,
+		cfg.Encryption.SupportedAlgorithms,
+		chunkedMode,
+		chunkSize,
+	)
 	if err != nil {
 		logger.WithError(err).Fatal("Failed to create encryption engine")
 	}
+	if keyManager != nil {
+		crypto.SetKeyManager(encryptionEngine, keyManager)
+	}
 
 	logger.WithFields(logrus.Fields{
-		"preferred_algorithm": cfg.Encryption.PreferredAlgorithm,
+		"preferred_algorithm":  cfg.Encryption.PreferredAlgorithm,
 		"supported_algorithms": cfg.Encryption.SupportedAlgorithms,
-		"chunked_mode": chunkedMode,
-		"chunk_size": chunkSize,
+		"chunked_mode":         chunkedMode,
+		"chunk_size":           chunkSize,
 	}).Info("Encryption configuration")
 
 	// Initialize cache if enabled (Phase 5 feature)
@@ -482,9 +539,9 @@ func main() {
 			cfg.Cache.DefaultTTL,
 		)
 		logger.WithFields(logrus.Fields{
-			"max_size":     cfg.Cache.MaxSize,
-			"max_items":    cfg.Cache.MaxItems,
-			"default_ttl":  cfg.Cache.DefaultTTL,
+			"max_size":    cfg.Cache.MaxSize,
+			"max_items":   cfg.Cache.MaxItems,
+			"default_ttl": cfg.Cache.DefaultTTL,
 		}).Info("Cache enabled")
 	}
 
@@ -552,7 +609,7 @@ func main() {
 	if cfg.Tracing.Enabled {
 		httpHandler = middleware.TracingMiddleware(cfg.Tracing.RedactSensitive)(httpHandler)
 	}
-	
+
 	// Apply bucket validation middleware if proxied bucket is configured
 	if cfg.ProxiedBucket != "" {
 		httpHandler = middleware.BucketValidationMiddleware(cfg.ProxiedBucket, logger)(httpHandler)

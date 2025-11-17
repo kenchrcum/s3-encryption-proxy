@@ -1,0 +1,371 @@
+package crypto
+
+import (
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+)
+
+const (
+	kmipJSONOperationEncrypt = "Encrypt"
+	kmipJSONOperationDecrypt = "Decrypt"
+	keyWrapBlockCipherMode   = "NISTKeyWrap"
+	keyWrapAlgorithm         = "AES"
+)
+
+var defaultKeyWrapIV = []byte{0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6, 0xA6}
+
+type cosmianKMIPJSONManager struct {
+	state    *cosmianKeyState
+	client   *http.Client
+	endpoint string
+}
+
+func newCosmianKMIPJSONManager(state *cosmianKeyState) (KeyManager, error) {
+	u, err := url.Parse(state.opts.Endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("kms: invalid Cosmian HTTP endpoint %q: %w", state.opts.Endpoint, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return nil, fmt.Errorf("kms: Cosmian HTTP endpoint must include scheme and host: %s", state.opts.Endpoint)
+	}
+	if u.Path == "" || u.Path == "/" {
+		u.Path = "/kmip/2_1"
+	}
+
+	var transport http.RoundTripper = &http.Transport{
+		TLSClientConfig: nil,
+	}
+	if t, ok := transport.(*http.Transport); ok {
+		if strings.EqualFold(u.Scheme, "https") {
+			// Clone the TLS config so callers can reuse the original opts without data races.
+			if state.opts.TLSConfig != nil {
+				t.TLSClientConfig = state.opts.TLSConfig.Clone()
+			} else {
+				t.TLSClientConfig = defaultTLSConfig()
+			}
+		}
+	}
+
+	client := &http.Client{
+		Timeout:   state.timeout,
+		Transport: transport,
+	}
+
+	return &cosmianKMIPJSONManager{
+		state:    state,
+		client:   client,
+		endpoint: u.String(),
+	}, nil
+}
+
+func (m *cosmianKMIPJSONManager) Provider() string {
+	return m.state.opts.Provider
+}
+
+func (m *cosmianKMIPJSONManager) WrapKey(ctx context.Context, plaintext []byte, _ map[string]string) (*KeyEnvelope, error) {
+	if len(plaintext) == 0 {
+		return nil, errors.New("kms: plaintext DEK is empty")
+	}
+
+	ctx, cancel := m.state.withTimeout(ctx)
+	defer cancel()
+
+	active := m.state.opts.Keys[0]
+	ciphertext, keyID, err := m.encrypt(ctx, active.ID, plaintext)
+	if err != nil {
+		return nil, err
+	}
+
+	version := active.Version
+	if ref, ok := m.state.keyLookup[keyID]; ok {
+		version = ref.Version
+	}
+
+	return &KeyEnvelope{
+		KeyID:      keyID,
+		KeyVersion: version,
+		Provider:   m.Provider(),
+		Ciphertext: ciphertext,
+	}, nil
+}
+
+func (m *cosmianKMIPJSONManager) UnwrapKey(ctx context.Context, envelope *KeyEnvelope, _ map[string]string) ([]byte, error) {
+	if envelope == nil {
+		return nil, errors.New("kms: key envelope is nil")
+	}
+	if len(envelope.Ciphertext) == 0 {
+		return nil, errors.New("kms: wrapped key is empty")
+	}
+
+	ctx, cancel := m.state.withTimeout(ctx)
+	defer cancel()
+
+	candidates := m.state.candidateKeys(envelope)
+	if len(candidates) == 0 {
+		return nil, errors.New("kms: no key candidates available for unwrap")
+	}
+
+	var lastErr error
+	attempts := 0
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		data, err := m.decrypt(ctx, candidate, envelope.Ciphertext)
+		if err == nil {
+			return data, nil
+		}
+		lastErr = err
+		attempts++
+		if attempts > 0 && attempts > m.state.opts.DualReadWindow+1 {
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = errors.New("kms: decrypt failed with no attempts recorded")
+	}
+	return nil, lastErr
+}
+
+func (m *cosmianKMIPJSONManager) ActiveKeyVersion(_ context.Context) (int, error) {
+	if len(m.state.opts.Keys) == 0 {
+		return 0, errors.New("kms: no keys configured")
+	}
+	return m.state.opts.Keys[0].Version, nil
+}
+
+func (m *cosmianKMIPJSONManager) Close(context.Context) error {
+	if tr, ok := m.client.Transport.(*http.Transport); ok {
+		tr.CloseIdleConnections()
+	}
+	return nil
+}
+
+func (m *cosmianKMIPJSONManager) encrypt(ctx context.Context, keyID string, plaintext []byte) ([]byte, string, error) {
+	req := kmipJSONRequestNode{
+		Tag: kmipJSONOperationEncrypt,
+		Value: []kmipJSONRequestNode{
+			textStringNode("UniqueIdentifier", keyID),
+			cryptographicParametersNode(),
+			byteStringNode("Data", plaintext),
+			byteStringNode("IVCounterNonce", defaultKeyWrapIV),
+		},
+	}
+
+	resp, err := m.doRequest(ctx, req)
+	if err != nil {
+		return nil, "", err
+	}
+
+	children, err := resp.children()
+	if err != nil {
+		return nil, "", err
+	}
+
+	dataNode := findKMIPChild(children, "Data")
+	if dataNode == nil {
+		return nil, "", errors.New("kms: Encrypt response missing Data field")
+	}
+	ciphertext, err := dataNode.bytesValue()
+	if err != nil {
+		return nil, "", fmt.Errorf("kms: invalid encrypt response ciphertext: %w", err)
+	}
+
+	keyNode := findKMIPChild(children, "UniqueIdentifier")
+	keyValue := keyID
+	if keyNode != nil {
+		if v, err := keyNode.stringValue(); err == nil && v != "" {
+			keyValue = v
+		}
+	}
+	return ciphertext, keyValue, nil
+}
+
+func (m *cosmianKMIPJSONManager) decrypt(ctx context.Context, keyID string, ciphertext []byte) ([]byte, error) {
+	req := kmipJSONRequestNode{
+		Tag: kmipJSONOperationDecrypt,
+		Value: []kmipJSONRequestNode{
+			textStringNode("UniqueIdentifier", keyID),
+			cryptographicParametersNode(),
+			byteStringNode("Data", ciphertext),
+			byteStringNode("IVCounterNonce", defaultKeyWrapIV),
+		},
+	}
+
+	resp, err := m.doRequest(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+
+	children, err := resp.children()
+	if err != nil {
+		return nil, err
+	}
+
+	dataNode := findKMIPChild(children, "Data")
+	if dataNode == nil {
+		return nil, errors.New("kms: Decrypt response missing Data field")
+	}
+	plaintext, err := dataNode.bytesValue()
+	if err != nil {
+		return nil, fmt.Errorf("kms: invalid decrypt response payload: %w", err)
+	}
+	return plaintext, nil
+}
+
+func (m *cosmianKMIPJSONManager) doRequest(ctx context.Context, payload kmipJSONRequestNode) (*kmipJSONResponseNode, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("kms: failed to marshal KMIP JSON request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("kms: failed to create KMIP request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("kms: KMIP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("kms: failed to read KMIP response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("kms: KMIP request failed (status %d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var node kmipJSONResponseNode
+	if err := json.Unmarshal(respBody, &node); err != nil {
+		return nil, fmt.Errorf("kms: invalid KMIP JSON response: %w", err)
+	}
+	return &node, nil
+}
+
+func cryptographicParametersNode() kmipJSONRequestNode {
+	return kmipJSONRequestNode{
+		Tag: "CryptographicParameters",
+		Value: []kmipJSONRequestNode{
+			enumNode("BlockCipherMode", keyWrapBlockCipherMode),
+			enumNode("CryptographicAlgorithm", keyWrapAlgorithm),
+		},
+	}
+}
+
+type kmipJSONRequestNode struct {
+	Tag   string      `json:"tag"`
+	Type  string      `json:"type,omitempty"`
+	Value interface{} `json:"value,omitempty"`
+}
+
+type kmipJSONResponseNode struct {
+	Tag   string          `json:"tag"`
+	Type  string          `json:"type,omitempty"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+func (n *kmipJSONResponseNode) children() ([]kmipJSONResponseNode, error) {
+	if n == nil || len(n.Value) == 0 {
+		return nil, nil
+	}
+	data := bytes.TrimSpace(n.Value)
+	if len(data) == 0 || data[0] != '[' {
+		return nil, nil
+	}
+	var nodes []kmipJSONResponseNode
+	if err := json.Unmarshal(data, &nodes); err != nil {
+		return nil, fmt.Errorf("kms: malformed KMIP JSON structure: %w", err)
+	}
+	return nodes, nil
+}
+
+func (n *kmipJSONResponseNode) stringValue() (string, error) {
+	if n == nil || len(n.Value) == 0 {
+		return "", nil
+	}
+	var val string
+	if err := json.Unmarshal(n.Value, &val); err != nil {
+		return "", err
+	}
+	return val, nil
+}
+
+func (n *kmipJSONResponseNode) bytesValue() ([]byte, error) {
+	if n == nil || len(n.Value) == 0 {
+		return nil, nil
+	}
+	data := bytes.TrimSpace(n.Value)
+	if len(data) == 0 {
+		return nil, nil
+	}
+	// Empty arrays are treated as nil byte slices.
+	if len(data) == 2 && data[0] == '[' && data[1] == ']' {
+		return nil, nil
+	}
+	if data[0] != '"' {
+		return nil, fmt.Errorf("unexpected KMIP value: %s", string(data))
+	}
+	var hexValue string
+	if err := json.Unmarshal(n.Value, &hexValue); err != nil {
+		return nil, err
+	}
+	if hexValue == "" {
+		return nil, nil
+	}
+	return hex.DecodeString(hexValue)
+}
+
+func textStringNode(tag, value string) kmipJSONRequestNode {
+	return kmipJSONRequestNode{
+		Tag:   tag,
+		Type:  "TextString",
+		Value: value,
+	}
+}
+
+func enumNode(tag, value string) kmipJSONRequestNode {
+	return kmipJSONRequestNode{
+		Tag:   tag,
+		Type:  "Enumeration",
+		Value: value,
+	}
+}
+
+func byteStringNode(tag string, data []byte) kmipJSONRequestNode {
+	val := ""
+	if len(data) > 0 {
+		val = strings.ToUpper(hex.EncodeToString(data))
+	}
+	return kmipJSONRequestNode{
+		Tag:   tag,
+		Type:  "ByteString",
+		Value: val,
+	}
+}
+
+func findKMIPChild(children []kmipJSONResponseNode, tag string) *kmipJSONResponseNode {
+	for i := range children {
+		if strings.EqualFold(children[i].Tag, tag) {
+			return &children[i]
+		}
+	}
+	return nil
+}
+
+func defaultTLSConfig() *tls.Config {
+	return &tls.Config{MinVersion: tls.VersionTLS12}
+}

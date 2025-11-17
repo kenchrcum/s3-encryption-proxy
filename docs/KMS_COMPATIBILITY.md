@@ -22,19 +22,37 @@ The gateway uses the `KeyManager` interface from `internal/crypto/keymanager.go`
 
 ```go
 type KeyManager interface {
-    // GetActiveKey returns the currently active encryption key.
-    GetActiveKey() (string, int, error)
-    
-    // GetAllKeys returns all encryption keys (for decryption of old objects).
-    GetAllKeys() map[int]string
-    
-    // RotateKey creates a new key version and optionally deactivates the old key.
-    RotateKey(newPassword string, deactivateOld bool) error
-    
-    // GetKeyVersion returns the key for a specific version.
-    GetKeyVersion(version int) (string, error)
+    Provider() string
+    WrapKey(ctx context.Context, plaintext []byte, metadata map[string]string) (*KeyEnvelope, error)
+    UnwrapKey(ctx context.Context, envelope *KeyEnvelope, metadata map[string]string) ([]byte, error)
+    ActiveKeyVersion(ctx context.Context) (int, error)
+    Close(ctx context.Context) error
 }
 ```
+
+> **Testing status:** Cosmian's KMIP server is the only backend exercised in our automated suite for v0.5. AWS KMS and Vault Transit adapters share the same interface but are not yet validated in CI—you should treat them as experimental until we add upstream coverage.
+
+The envelope returned by `WrapKey` is persisted alongside object metadata:
+
+* `x-amz-meta-encryption-wrapped-key` – DEK ciphertext (base64)
+* `x-amz-meta-encryption-kms-id` – wrapping key identifier/ARN
+* `x-amz-meta-encryption-kms-provider` – provider hint (e.g. `cosmian-kmip`)
+* `x-amz-meta-encryption-key-version` – human-friendly version counter
+
+At decrypt time the engine builds the same envelope and calls `UnwrapKey`. This allows dual-read windows and phased rotations—the key manager implementation decides how many historical keys to keep and how to interpret the metadata.
+
+### Cosmian KMIP Quick Start
+
+Cosmian publishes an all-in-one Docker image that exposes the HTTPS admin UI on port `9998` and a KMIP endpoint. The quickest way to start a local instance is:
+
+```bash
+docker run -d --rm --name cosmian-kms \
+  -p 5696:5696 -p 9998:9998 ghcr.io/cosmian/kms:latest
+```
+
+Refer to the [Cosmian installation guide](https://docs.cosmian.com/key_management_system/installation/installation_getting_started/?utm_source=openai) for production-grade TLS and identity settings. Once the container is running, create a wrapping key via the UI, note its identifier, and add it under `encryption.key_manager.cosmian.keys` in the gateway configuration.
+
+The repository ships with integration tests (`test/cosmian_kms_test.go`) and a lower-level unit suite (`internal/crypto/keymanager_test.go`) that exercise the KMIP flow using the upstream `kmiptest` harness. These tests run as part of `go test ./...` and ensure that wrapping/unwrapping as well as metadata propagation work before hitting a real appliance.
 
 ## Implementing a Custom KMS
 
@@ -43,59 +61,38 @@ To create a KMS-compatible system, implement the `KeyManager` interface. Here's 
 ### Step 1: Implement the Interface
 
 ```go
-package yourkms
-
-import (
-    "github.com/kenneth/s3-encryption-gateway/internal/crypto"
-)
-
 type YourKMS struct {
-    // Add your KMS-specific fields
-    endpoint string
-    credentials string
-    // ... other fields
+    client kmip.Client
+    active wrappingKey
 }
 
-// GetActiveKey returns the currently active encryption key
-func (k *YourKMS) GetActiveKey() (string, int, error) {
-    // 1. Query your KMS for the active key
-    // 2. Return the key material (password) and version number
-    // Example:
-    key, version, err := k.queryKMSForActiveKey()
+func (k *YourKMS) Provider() string {
+    return "your-kms"
+}
+
+func (k *YourKMS) WrapKey(ctx context.Context, plaintext []byte, _ map[string]string) (*crypto.KeyEnvelope, error) {
+    ciphertext, err := k.client.Encrypt(ctx, k.active.ID, plaintext)
     if err != nil {
-        return "", 0, err
+        return nil, err
     }
-    return key, version, nil
+    return &crypto.KeyEnvelope{
+        KeyID:      k.active.ID,
+        KeyVersion: k.active.Version,
+        Provider:   k.Provider(),
+        Ciphertext: ciphertext,
+    }, nil
 }
 
-// GetAllKeys returns all encryption keys for backward compatibility
-func (k *YourKMS) GetAllKeys() map[int]string {
-    // Return all keys that can decrypt old objects
-    // Format: map[version]password
-    keys := make(map[int]string)
-    allKeys := k.queryKMSForAllKeys()
-    for version, key := range allKeys {
-        keys[version] = key
-    }
-    return keys
+func (k *YourKMS) UnwrapKey(ctx context.Context, env *crypto.KeyEnvelope, _ map[string]string) ([]byte, error) {
+    return k.client.Decrypt(ctx, env.KeyID, env.Ciphertext)
 }
 
-// RotateKey creates a new key version
-func (k *YourKMS) RotateKey(newPassword string, deactivateOld bool) error {
-    // 1. Validate new password (min 12 chars)
-    if len(newPassword) < 12 {
-        return fmt.Errorf("password must be at least 12 characters")
-    }
-    
-    // 2. Create new key version in your KMS
-    // 3. Optionally deactivate old keys
-    return k.createNewKeyVersion(newPassword, deactivateOld)
+func (k *YourKMS) ActiveKeyVersion(ctx context.Context) (int, error) {
+    return k.active.Version, nil
 }
 
-// GetKeyVersion returns a specific key version
-func (k *YourKMS) GetKeyVersion(version int) (string, error) {
-    // Query your KMS for a specific key version
-    return k.queryKMSForKeyVersion(version)
+func (k *YourKMS) Close(ctx context.Context) error {
+    return k.client.Close(ctx)
 }
 ```
 
@@ -104,7 +101,7 @@ func (k *YourKMS) GetKeyVersion(version int) (string, error) {
 The gateway calls the KeyManager in these scenarios:
 
 1. **Encryption**: Calls `GetActiveKey()` to get the current password
-2. **Decryption**: Uses `GetKeyVersion()` to retrieve keys for old objects
+2. **Decryption**: Uses the metadata-stored envelope to call `UnwrapKey()`
 3. **Key Rotation**: Uses `RotateKey()` when keys need to be rotated
 
 ### Step 3: Key Versioning Strategy
@@ -354,10 +351,12 @@ func TestYourKMS(t *testing.T) {
     assert.Equal(t, "new-password-123", newKey)
     assert.Greater(t, newVersion, version)
     
-    // Test GetKeyVersion
-    oldKey, err := kms.GetKeyVersion(version)
+    // Test Wrap/Unwrap cycle
+    env, err := kms.WrapKey(ctx, []byte("plaintext-dek"), nil)
     assert.NoError(t, err)
-    assert.Equal(t, key, oldKey) // Old key still retrievable
+    plaintext, err := kms.UnwrapKey(ctx, env, nil)
+    assert.NoError(t, err)
+    assert.Equal(t, []byte("plaintext-dek"), plaintext)
 }
 ```
 
@@ -381,7 +380,7 @@ The gateway will continue to work with objects encrypted with the original passw
 
 ### Decryption failures after rotation
 - Ensure old key versions are still accessible
-- Check that `GetKeyVersion()` returns the correct key
+- Check that `WrapKey()/UnwrapKey()` round-trip correctly
 - Verify metadata includes correct version number
 
 ### Performance issues

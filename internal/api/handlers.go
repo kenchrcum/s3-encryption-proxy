@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -64,17 +65,19 @@ func NewHandlerWithFeatures(
     if config != nil {
         h.clientFactory = s3.NewClientFactory(&config.Backend)
     }
-    // If key manager is available, wire a key resolver into the encryption engine for rotation support.
-    if keyManager != nil {
-        crypto.SetKeyResolver(encryptionEngine, func(version int) (string, bool) {
-            pass, err := keyManager.GetKeyVersion(version)
-            if err != nil || pass == "" {
-                return "", false
-            }
-            return pass, true
-        })
-    }
     return h
+}
+
+func (h *Handler) currentKeyVersion(ctx context.Context) int {
+	if h.keyManager == nil {
+		return 0
+	}
+	version, err := h.keyManager.ActiveKeyVersion(ctx)
+	if err != nil {
+		h.logger.WithError(err).Debug("Failed to get active key version")
+		return 0
+	}
+	return version
 }
 
 // RegisterRoutes registers all API routes.
@@ -722,7 +725,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	}
 	keyVersion := 0 // Default if not available
 	if h.keyManager != nil {
-		_, keyVersion, _ = h.keyManager.GetActiveKey()
+		keyVersion = h.currentKeyVersion(r.Context())
 	}
 
 	// Audit logging
@@ -916,14 +919,6 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	}
 	metadata["Content-Type"] = contentType
 
-    // Include key version in metadata if key manager is enabled
-    if h.keyManager != nil {
-        _, keyVersion, _ := h.keyManager.GetActiveKey()
-        if keyVersion > 0 {
-            metadata[crypto.MetaKeyVersion] = fmt.Sprintf("%d", keyVersion)
-        }
-    }
-
     // Encrypt the object
 	encryptStart := time.Now()
 	encryptedReader, encMetadata, err := h.encryptionEngine.Encrypt(r.Body, metadata)
@@ -936,7 +931,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	}
 	keyVersion := 0
 	if h.keyManager != nil {
-		_, keyVersion, _ = h.keyManager.GetActiveKey()
+		keyVersion = h.currentKeyVersion(r.Context())
 	}
 
 	if err != nil {

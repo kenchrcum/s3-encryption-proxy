@@ -1,12 +1,15 @@
-package crypto
+package test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"io"
 	"testing"
 	"time"
 
+	"github.com/kenneth/s3-encryption-gateway/internal/crypto"
 	"github.com/ovh/kmip-go"
 	"github.com/ovh/kmip-go/kmipserver"
 	"github.com/ovh/kmip-go/kmiptest"
@@ -14,20 +17,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCosmianKMIPManager_WrapUnwrap(t *testing.T) {
+func TestEncryptionEngineWithCosmianKMIP(t *testing.T) {
 	exec := kmipserver.NewBatchExecutor()
 	handler := &testKMIPWrapHandler{}
 	exec.Route(kmip.OperationEncrypt, kmipserver.HandleFunc(handler.encrypt))
 	exec.Route(kmip.OperationDecrypt, kmipserver.HandleFunc(handler.decrypt))
 
 	addr, ca := kmiptest.NewServer(t, exec)
-	tlsCfg := mustTLSConfigFromPEM(t, ca)
+	tlsCfg := tlsConfigFromPEM(t, ca)
 
-	mgr, err := NewCosmianKMIPManager(CosmianKMIPOptions{
-		Endpoint: addr,
-		Keys: []KMIPKeyReference{
-			{ID: "wrapping-key-1", Version: 1},
-		},
+	manager, err := crypto.NewCosmianKMIPManager(crypto.CosmianKMIPOptions{
+		Endpoint:       addr,
+		Keys:           []crypto.KMIPKeyReference{{ID: "test-wrap-key", Version: 1}},
 		TLSConfig:      tlsCfg,
 		Timeout:        time.Second,
 		Provider:       "test-kmip",
@@ -35,29 +36,28 @@ func TestCosmianKMIPManager_WrapUnwrap(t *testing.T) {
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_ = mgr.Close(context.Background())
+		_ = manager.Close(context.Background())
 	})
 
-	env, err := mgr.WrapKey(context.Background(), []byte("plaintext-key"), nil)
+	engine, err := crypto.NewEngine("fallback-password-123")
 	require.NoError(t, err)
-	require.NotNil(t, env)
-	require.NotEmpty(t, env.Ciphertext)
-	require.Equal(t, 1, env.KeyVersion)
-	require.Equal(t, "test-kmip", env.Provider)
+	crypto.SetKeyManager(engine, manager)
 
-	unwrapped, err := mgr.UnwrapKey(context.Background(), env, nil)
+	plaintext := []byte("cosmian-encryption-test")
+	encReader, encMetadata, err := engine.Encrypt(bytes.NewReader(plaintext), map[string]string{
+		"Content-Type": "text/plain",
+	})
 	require.NoError(t, err)
-	require.Equal(t, "plaintext-key", string(unwrapped))
+	require.Equal(t, "true", encMetadata[crypto.MetaEncrypted])
+	require.NotEmpty(t, encMetadata[crypto.MetaWrappedKeyCiphertext])
+	require.Equal(t, "test-kmip", encMetadata[crypto.MetaKMSProvider])
 
-	// Force fallback path using version lookup.
-	env.KeyID = ""
-	unwrapped, err = mgr.UnwrapKey(context.Background(), env, nil)
+	decReader, decMetadata, err := engine.Decrypt(encReader, encMetadata)
 	require.NoError(t, err)
-	require.Equal(t, "plaintext-key", string(unwrapped))
-
-	version, err := mgr.ActiveKeyVersion(context.Background())
+	require.Equal(t, "text/plain", decMetadata["Content-Type"])
+	decrypted, err := io.ReadAll(decReader)
 	require.NoError(t, err)
-	require.Equal(t, 1, version)
+	require.Equal(t, plaintext, decrypted)
 }
 
 type testKMIPWrapHandler struct{}
@@ -79,12 +79,12 @@ func (h *testKMIPWrapHandler) decrypt(_ context.Context, req *payloads.DecryptRe
 func xorBytes(in []byte) []byte {
 	out := make([]byte, len(in))
 	for i, b := range in {
-		out[i] = b ^ 0x5c
+		out[i] = b ^ 0xAA
 	}
 	return out
 }
 
-func mustTLSConfigFromPEM(t *testing.T, pem string) *tls.Config {
+func tlsConfigFromPEM(t *testing.T, pem string) *tls.Config {
 	t.Helper()
 	pool := x509.NewCertPool()
 	require.True(t, pool.AppendCertsFromPEM([]byte(pem)))

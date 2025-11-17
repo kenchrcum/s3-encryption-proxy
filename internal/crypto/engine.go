@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -29,21 +30,24 @@ const (
 	tagSize          = 16 // 128 bits authentication tag
 
 	// Metadata keys for encryption information
-	MetaEncrypted          = "x-amz-meta-encrypted"
-	MetaAlgorithm          = "x-amz-meta-encryption-algorithm"
-	MetaKeySalt            = "x-amz-meta-encryption-key-salt"
-	MetaIV                 = "x-amz-meta-encryption-iv"
-	MetaAuthTag            = "x-amz-meta-encryption-auth-tag"
-	MetaOriginalSize       = "x-amz-meta-encryption-original-size"
-	MetaOriginalETag       = "x-amz-meta-encryption-original-etag"
-	MetaCompression        = "x-amz-meta-encryption-compression"
-	MetaCompressionEnabled = "x-amz-meta-compression-enabled"
-	MetaCompressionAlgorithm = "x-amz-meta-compression-algorithm"
+	MetaEncrypted               = "x-amz-meta-encrypted"
+	MetaAlgorithm               = "x-amz-meta-encryption-algorithm"
+	MetaKeySalt                 = "x-amz-meta-encryption-key-salt"
+	MetaIV                      = "x-amz-meta-encryption-iv"
+	MetaAuthTag                 = "x-amz-meta-encryption-auth-tag"
+	MetaOriginalSize            = "x-amz-meta-encryption-original-size"
+	MetaOriginalETag            = "x-amz-meta-encryption-original-etag"
+	MetaCompression             = "x-amz-meta-encryption-compression"
+	MetaCompressionEnabled      = "x-amz-meta-compression-enabled"
+	MetaCompressionAlgorithm    = "x-amz-meta-compression-algorithm"
 	MetaCompressionOriginalSize = "x-amz-meta-compression-original-size"
+	MetaWrappedKeyCiphertext    = "x-amz-meta-encryption-wrapped-key"
+	MetaKMSKeyID                = "x-amz-meta-encryption-kms-id"
+	MetaKMSProvider             = "x-amz-meta-encryption-kms-provider"
 
 	// Fallback metadata storage keys
-	MetaFallbackMode     = "x-amz-meta-encryption-fallback"
-	MetaFallbackPointer  = "x-amz-meta-encryption-fallback-ptr"
+	MetaFallbackMode    = "x-amz-meta-encryption-fallback"
+	MetaFallbackPointer = "x-amz-meta-encryption-fallback-ptr"
 )
 
 // EncryptionEngine provides encryption and decryption functionality.
@@ -62,15 +66,15 @@ type EncryptionEngine interface {
 
 // engine implements the EncryptionEngine interface.
 type engine struct {
-	password          string
-	compressionEngine CompressionEngine
-	preferredAlgorithm string
+	password            string
+	compressionEngine   CompressionEngine
+	preferredAlgorithm  string
 	supportedAlgorithms []string
-    // keyResolver resolves a password by key version for decryption of older objects
-    keyResolver       func(version int) (string, bool)
+	// keyResolver resolves a password by key version for decryption of older objects
+	keyResolver func(version int) (string, bool)
 	// Chunked encryption settings
 	chunkedMode bool // Enable chunked/streaming encryption mode
-	chunkSize    int  // Size of each encryption chunk (default: DefaultChunkSize)
+	chunkSize   int  // Size of each encryption chunk (default: DefaultChunkSize)
 	// Provider and compaction settings
 	providerProfile *ProviderProfile
 	compactor       *MetadataCompactor
@@ -78,6 +82,8 @@ type engine struct {
 	bufferPool *BufferPool
 	// Tracing
 	tracer trace.Tracer
+	// External key manager (optional)
+	kmsManager KeyManager
 }
 
 // NewEngine creates a new encryption engine with the given password.
@@ -154,43 +160,50 @@ func NewEngineWithChunkingAndProvider(password string, compressionEngine Compres
 	}
 
 	return &engine{
-		password:           password,
-		compressionEngine:  compressionEngine,
-		preferredAlgorithm: preferredAlgorithm,
+		password:            password,
+		compressionEngine:   compressionEngine,
+		preferredAlgorithm:  preferredAlgorithm,
 		supportedAlgorithms: supportedAlgorithms,
 		chunkedMode:         chunkedMode,
-		chunkSize:            chunkSize,
+		chunkSize:           chunkSize,
 		providerProfile:     profile,
 		compactor:           compactor,
-		bufferPool:         GetGlobalBufferPool(),
-		tracer:             otel.Tracer("s3-encryption-gateway.crypto"),
+		bufferPool:          GetGlobalBufferPool(),
+		tracer:              otel.Tracer("s3-encryption-gateway.crypto"),
 	}, nil
 }
 
 // NewEngineWithResolver creates a new encryption engine with a key resolver for rotation support.
 func NewEngineWithResolver(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool)) (EncryptionEngine, error) {
-    return NewEngineWithResolverAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, resolver, "default")
+	return NewEngineWithResolverAndProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, resolver, "default")
 }
 
 // NewEngineWithResolverAndProvider creates a new encryption engine with a key resolver and provider support.
 func NewEngineWithResolverAndProvider(password string, compressionEngine CompressionEngine, preferredAlgorithm string, supportedAlgorithms []string, resolver func(version int) (string, bool), provider string) (EncryptionEngine, error) {
-    eng, err := NewEngineWithProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, provider)
-    if err != nil {
-        return nil, err
-    }
-    // Set resolver on concrete type
-    if e, ok := eng.(*engine); ok {
-        e.keyResolver = resolver
-    }
-    return eng, nil
+	eng, err := NewEngineWithProvider(password, compressionEngine, preferredAlgorithm, supportedAlgorithms, provider)
+	if err != nil {
+		return nil, err
+	}
+	// Set resolver on concrete type
+	if e, ok := eng.(*engine); ok {
+		e.keyResolver = resolver
+	}
+	return eng, nil
 }
 
 // SetKeyResolver sets a key resolver on an existing engine instance.
 // This allows decryption using older key versions without reconstructing the engine.
 func SetKeyResolver(enc EncryptionEngine, resolver func(version int) (string, bool)) {
-    if e, ok := enc.(*engine); ok {
-        e.keyResolver = resolver
-    }
+	if e, ok := enc.(*engine); ok {
+		e.keyResolver = resolver
+	}
+}
+
+// SetKeyManager wires an external KeyManager into the engine for envelope encryption.
+func SetKeyManager(enc EncryptionEngine, manager KeyManager) {
+	if e, ok := enc.(*engine); ok {
+		e.kmsManager = manager
+	}
 }
 
 // deriveKey derives an AES-256 key from the password using PBKDF2.
@@ -244,6 +257,14 @@ func (e *engine) createCipher(key []byte) (cipher.AEAD, error) {
 	}
 
 	return gcm, nil
+}
+
+func generateDataKey(size int) ([]byte, error) {
+	key := make([]byte, size)
+	if _, err := rand.Read(key); err != nil {
+		return nil, fmt.Errorf("failed to generate data key: %w", err)
+	}
+	return key, nil
 }
 
 // Encrypt encrypts data from the reader and returns an encrypted reader
@@ -323,29 +344,48 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		return nil, nil, fmt.Errorf("failed to generate nonce: %w", err)
 	}
 
-	// Derive key from password and salt
-	key, err := e.deriveKey(salt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
-	}
-	defer zeroBytes(key)
-
-	// Use appropriate key size for algorithm
 	keySize := aesKeySize
 	if algorithm == AlgorithmChaCha20Poly1305 {
 		keySize = chacha20KeySize
 	}
-	if len(key) != keySize {
-		// Trim or pad key to required size
-		adjustedKey := make([]byte, keySize)
-		copy(adjustedKey, key)
-		if len(key) < keySize {
-			// Pad with PBKDF2 of original key (simple approach)
-			copy(adjustedKey[len(key):], key[:keySize-len(key)])
+
+	var (
+		key      []byte
+		envelope *KeyEnvelope
+	)
+
+	if e.kmsManager != nil {
+		key, err = generateDataKey(keySize)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to generate data key: %w", err)
 		}
-		zeroBytes(key)
-		key = adjustedKey
+		envelope, err = e.kmsManager.WrapKey(ctx, key, metadata)
+		if err != nil {
+			zeroBytes(key)
+			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)
+		}
+		if metadata == nil {
+			metadata = make(map[string]string)
+		}
+		metadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+	} else {
+		key, err = e.deriveKey(salt)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+		}
+		if len(key) != keySize {
+			// Trim or pad key to required size
+			adjustedKey := make([]byte, keySize)
+			copy(adjustedKey, key)
+			if len(key) < keySize {
+				// Pad with PBKDF2 of original key (simple approach)
+				copy(adjustedKey[len(key):], key[:keySize-len(key)])
+			}
+			zeroBytes(key)
+			key = adjustedKey
+		}
 	}
+	defer zeroBytes(key)
 
 	// Create cipher using selected algorithm
 	aeadCipher, err := createAEADCipher(algorithm, key)
@@ -360,14 +400,14 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		return nil, nil, fmt.Errorf("failed to read data for encryption: %w", err)
 	}
 
-    // Build AAD to bind critical metadata
-    aad := buildAAD(algorithm, salt, nonce, map[string]string{
-        "Content-Type": contentType,
-        MetaKeyVersion:  metadata[MetaKeyVersion],
-        MetaOriginalSize: fmt.Sprintf("%d", originalSize),
-    })
-    // Encrypt the data using AEAD with AAD
-    ciphertext := gcm.Seal(nil, nonce, dataToEncrypt, aad)
+	// Build AAD to bind critical metadata
+	aad := buildAAD(algorithm, salt, nonce, map[string]string{
+		"Content-Type":   contentType,
+		MetaKeyVersion:   metadata[MetaKeyVersion],
+		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
+	})
+	// Encrypt the data using AEAD with AAD
+	ciphertext := gcm.Seal(nil, nonce, dataToEncrypt, aad)
 
 	// Create encrypted reader from ciphertext
 	encryptedReader := bytes.NewReader(ciphertext)
@@ -388,17 +428,25 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		}
 	}
 
-    // Add encryption markers
+	// Add encryption markers
 	encMetadata[MetaEncrypted] = "true"
 	encMetadata[MetaAlgorithm] = algorithm
 	encMetadata[MetaKeySalt] = encodeBase64(salt)
 	encMetadata[MetaIV] = encodeBase64(nonce)
 	encMetadata[MetaOriginalSize] = fmt.Sprintf("%d", originalSize)
 	encMetadata[MetaOriginalETag] = originalETag
-    // Preserve key version if provided by caller
-    if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
-        encMetadata[MetaKeyVersion] = kv
-    }
+	if envelope != nil {
+		encMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+		if envelope.KeyID != "" {
+			encMetadata[MetaKMSKeyID] = envelope.KeyID
+		}
+		if envelope.Provider != "" {
+			encMetadata[MetaKMSProvider] = envelope.Provider
+		}
+		encMetadata[MetaWrappedKeyCiphertext] = encodeBase64(envelope.Ciphertext)
+	} else if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
+		encMetadata[MetaKeyVersion] = kv
+	}
 
 	// Note: Authentication tag is included in the ciphertext by GCM.Seal
 
@@ -451,7 +499,6 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	// Legacy buffered mode for backward compatibility
 
-	// Extract encryption parameters from expanded metadata
 	salt, err := decodeBase64(expandedMetadata[MetaKeySalt])
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to decode salt: %w", err)
@@ -462,103 +509,120 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 		return nil, nil, fmt.Errorf("failed to decode IV: %w", err)
 	}
 
-	// Get algorithm from metadata (default to AES-GCM for backward compatibility)
 	algorithm := expandedMetadata[MetaAlgorithm]
 	if algorithm == "" {
 		algorithm = AlgorithmAES256GCM
 	}
-
-	// Verify algorithm is supported
 	if !isAlgorithmSupported(algorithm, e.supportedAlgorithms) {
 		return nil, nil, fmt.Errorf("unsupported algorithm %s (not in supported list)", algorithm)
 	}
 
-	// Derive key from password and salt
-	key, err := e.deriveKey(salt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
-	}
-	defer zeroBytes(key)
-
-	// Adjust key size for algorithm
 	keySize := aesKeySize
 	if algorithm == AlgorithmChaCha20Poly1305 {
 		keySize = chacha20KeySize
 	}
-	if len(key) != keySize {
-		adjustedKey := e.bufferPool.Get32()
-		copy(adjustedKey, key)
-		if len(key) < keySize {
-			copy(adjustedKey[len(key):], key[:keySize-len(key)])
-		}
-		zeroBytes(key)
-		key = adjustedKey
-		defer e.bufferPool.Put32(adjustedKey) // Return to pool when function exits
-	}
 
-	// Create cipher using algorithm from metadata
+	var (
+		key      []byte
+		usingKMS bool
+	)
+
+	if e.kmsManager != nil && expandedMetadata[MetaWrappedKeyCiphertext] != "" {
+		usingKMS = true
+		ciphertext, err := decodeBase64(expandedMetadata[MetaWrappedKeyCiphertext])
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decode wrapped data key: %w", err)
+		}
+		env := &KeyEnvelope{
+			KeyID:      expandedMetadata[MetaKMSKeyID],
+			KeyVersion: parseKeyVersion(expandedMetadata[MetaKeyVersion]),
+			Provider:   expandedMetadata[MetaKMSProvider],
+			Ciphertext: ciphertext,
+		}
+		key, err = e.kmsManager.UnwrapKey(ctx, env, expandedMetadata)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to unwrap data key: %w", err)
+		}
+	} else {
+		key, err = e.deriveKey(salt)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+		}
+		if len(key) != keySize {
+			adjustedKey := e.bufferPool.Get32()
+			copy(adjustedKey, key)
+			if len(key) < keySize {
+				copy(adjustedKey[len(key):], key[:keySize-len(key)])
+			}
+			zeroBytes(key)
+			key = adjustedKey
+			defer e.bufferPool.Put32(adjustedKey)
+		}
+	}
+	defer zeroBytes(key)
+
 	aeadCipher, err := createAEADCipher(algorithm, key)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create cipher for algorithm %s: %w", algorithm, err)
 	}
-	gcm := aeadCipher.(cipher.AEAD) // For backward compatibility
+	gcm := aeadCipher.(cipher.AEAD)
 
-    // Read all encrypted data (current implementation is buffered)
-    ciphertext, err := io.ReadAll(reader)
-    if err != nil {
-        return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
-    }
+	// Read all encrypted data (current implementation is buffered)
+	ciphertext, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
+	}
 
-    // Build AAD from expanded metadata
-    aad := buildAAD(algorithm, salt, iv, map[string]string{
-        MetaKeyVersion:  expandedMetadata[MetaKeyVersion],
-        MetaOriginalSize: expandedMetadata[MetaOriginalSize],
-        "Content-Type":  expandedMetadata["Content-Type"],
-    })
+	// Build AAD from expanded metadata
+	aad := buildAAD(algorithm, salt, iv, map[string]string{
+		MetaKeyVersion:   expandedMetadata[MetaKeyVersion],
+		MetaOriginalSize: expandedMetadata[MetaOriginalSize],
+		"Content-Type":   expandedMetadata["Content-Type"],
+	})
 
-    // Attempt decrypt with current key and AAD
-    plaintext, openErr := gcm.Open(nil, iv, ciphertext, aad)
-    if openErr != nil {
-        // Backward compatibility: try without AAD
-        if pt, err2 := gcm.Open(nil, iv, ciphertext, nil); err2 == nil {
-            plaintext = pt
-            openErr = nil
-        }
-    }
+	// Attempt decrypt with current key and AAD
+	plaintext, openErr := gcm.Open(nil, iv, ciphertext, aad)
+	if openErr != nil {
+		// Backward compatibility: try without AAD
+		if pt, err2 := gcm.Open(nil, iv, ciphertext, nil); err2 == nil {
+			plaintext = pt
+			openErr = nil
+		}
+	}
 
-    // If still failing and keyResolver available with key version, try resolved password
-    if openErr != nil && e.keyResolver != nil {
-        if kvStr, ok := expandedMetadata[MetaKeyVersion]; ok && kvStr != "" {
-            // parse version
-            var ver int
-            if _, perr := fmt.Sscanf(kvStr, "%d", &ver); perr == nil {
-                if altPass, ok := e.keyResolver(ver); ok {
-                    // derive alt key
-                    altKey := pbkdf2.Key([]byte(altPass), salt, pbkdf2Iterations, keySize, sha256.New)
-                    defer zeroBytes(altKey)
-                    // create cipher
-                    altCipher, cerr := createAEADCipher(algorithm, altKey)
-                    if cerr == nil {
-                        altGCM := altCipher.(cipher.AEAD)
-                        if pt, err3 := altGCM.Open(nil, iv, ciphertext, aad); err3 == nil {
-                            plaintext = pt
-                            openErr = nil
-                        } else if pt2, err4 := altGCM.Open(nil, iv, ciphertext, nil); err4 == nil {
-                            plaintext = pt2
-                            openErr = nil
-                        }
-                    }
-                }
-            }
-        }
-    }
+	// If still failing and keyResolver available with key version, try resolved password (pbkdf2 mode only)
+	if openErr != nil && !usingKMS && e.keyResolver != nil {
+		if kvStr, ok := expandedMetadata[MetaKeyVersion]; ok && kvStr != "" {
+			// parse version
+			var ver int
+			if _, perr := fmt.Sscanf(kvStr, "%d", &ver); perr == nil {
+				if altPass, ok := e.keyResolver(ver); ok {
+					// derive alt key
+					altKey := pbkdf2.Key([]byte(altPass), salt, pbkdf2Iterations, keySize, sha256.New)
+					defer zeroBytes(altKey)
+					// create cipher
+					altCipher, cerr := createAEADCipher(algorithm, altKey)
+					if cerr == nil {
+						altGCM := altCipher.(cipher.AEAD)
+						if pt, err3 := altGCM.Open(nil, iv, ciphertext, aad); err3 == nil {
+							plaintext = pt
+							openErr = nil
+						} else if pt2, err4 := altGCM.Open(nil, iv, ciphertext, nil); err4 == nil {
+							plaintext = pt2
+							openErr = nil
+						}
+					}
+				}
+			}
+		}
+	}
 
-    if openErr != nil {
-        return nil, nil, fmt.Errorf("failed to decrypt data: %w", openErr)
-    }
+	if openErr != nil {
+		return nil, nil, fmt.Errorf("failed to decrypt data: %w", openErr)
+	}
 
-    // Create decrypted reader from plaintext
-    decryptedReader := bytes.NewReader(plaintext)
+	// Create decrypted reader from plaintext
+	decryptedReader := bytes.NewReader(plaintext)
 
 	// Read decrypted data (may be compressed)
 	decryptedData, err := io.ReadAll(decryptedReader)
@@ -650,18 +714,47 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 		return nil, nil, fmt.Errorf("failed to generate base IV: %w", err)
 	}
 
-	// Derive key from password and salt
-	key, err := e.deriveKey(salt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
-	}
-	defer zeroBytes(key)
-
-	// Use appropriate key size for algorithm
 	keySize := aesKeySize
 	if algorithm == AlgorithmChaCha20Poly1305 {
 		keySize = chacha20KeySize
 	}
+
+	var (
+		key      []byte
+		envelope *KeyEnvelope
+	)
+
+	if e.kmsManager != nil {
+		key, err = generateDataKey(keySize)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to generate data key: %w", err)
+		}
+		envelope, err = e.kmsManager.WrapKey(context.Background(), key, metadata)
+		if err != nil {
+			zeroBytes(key)
+			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)
+		}
+		if metadata == nil {
+			metadata = make(map[string]string)
+		}
+		metadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+	} else {
+		key, err = e.deriveKey(salt)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+		}
+		if len(key) != keySize {
+			adjustedKey := e.bufferPool.Get32()
+			copy(adjustedKey, key)
+			if len(key) < keySize {
+				copy(adjustedKey[len(key):], key[:keySize-len(key)])
+			}
+			zeroBytes(key)
+			key = adjustedKey
+			defer e.bufferPool.Put32(adjustedKey)
+		}
+	}
+	defer zeroBytes(key)
 	if len(key) != keySize {
 		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
@@ -710,8 +803,16 @@ func (e *engine) encryptChunked(reader io.Reader, metadata map[string]string) (i
 	// (it only gets incremented during encryption). ChunkCount can be calculated during
 	// decryption from the encrypted object size and chunk size, or from the manifest if needed.
 	// Some S3 implementations reject metadata with value "0", so we omit it.
-	// Preserve key version if provided
-	if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
+	if envelope != nil {
+		encMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+		if envelope.KeyID != "" {
+			encMetadata[MetaKMSKeyID] = envelope.KeyID
+		}
+		if envelope.Provider != "" {
+			encMetadata[MetaKMSProvider] = envelope.Provider
+		}
+		encMetadata[MetaWrappedKeyCiphertext] = encodeBase64(envelope.Ciphertext)
+	} else if kv, ok := metadata[MetaKeyVersion]; ok && kv != "" {
 		encMetadata[MetaKeyVersion] = kv
 	}
 
@@ -739,18 +840,44 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 
 	algorithm := e.preferredAlgorithm
 
-	// Derive key
-	key, err := e.deriveKey(salt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
-	}
-	defer zeroBytes(key)
-
-	// Adjust key size for algorithm
 	keySize := aesKeySize
 	if algorithm == AlgorithmChaCha20Poly1305 {
 		keySize = chacha20KeySize
 	}
+
+	var (
+		key      []byte
+		envelope *KeyEnvelope
+	)
+
+	if e.kmsManager != nil {
+		key, err = generateDataKey(keySize)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to generate data key: %w", err)
+		}
+		envelope, err = e.kmsManager.WrapKey(context.Background(), key, fullMetadata)
+		if err != nil {
+			zeroBytes(key)
+			return nil, nil, fmt.Errorf("failed to wrap data key: %w", err)
+		}
+		fullMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+	} else {
+		key, err = e.deriveKey(salt)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+		}
+		if len(key) != keySize {
+			adjustedKey := e.bufferPool.Get32()
+			copy(adjustedKey, key)
+			if len(key) < keySize {
+				copy(adjustedKey[len(key):], key[:keySize-len(key)])
+			}
+			zeroBytes(key)
+			key = adjustedKey
+			defer e.bufferPool.Put32(adjustedKey)
+		}
+	}
+	defer zeroBytes(key)
 	if len(key) != keySize {
 		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
@@ -792,6 +919,16 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 	fullMetadata[MetaChunkSize] = fmt.Sprintf("%d", e.chunkSize)
 	fullMetadata[MetaManifest] = manifestEncoded
 	fullMetadata[MetaOriginalETag] = originalETag
+	if envelope != nil {
+		fullMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+		if envelope.KeyID != "" {
+			fullMetadata[MetaKMSKeyID] = envelope.KeyID
+		}
+		if envelope.Provider != "" {
+			fullMetadata[MetaKMSProvider] = envelope.Provider
+		}
+		fullMetadata[MetaWrappedKeyCiphertext] = encodeBase64(envelope.Ciphertext)
+	}
 
 	// Serialize full metadata to JSON
 	metadataJSON, err := encodeMetadataToJSON(fullMetadata)
@@ -815,7 +952,7 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 
 	// Build AAD for authentication
 	aad := buildAAD(algorithm, salt, baseIV, map[string]string{
-		"Content-Type": contentType,
+		"Content-Type":   contentType,
 		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
 	})
 
@@ -831,6 +968,16 @@ func (e *engine) encryptChunkedWithMetadataFallback(plaintext []byte, fullMetada
 		MetaIV:           encodeBase64(baseIV),
 		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
 		MetaOriginalETag: originalETag,
+	}
+	if envelope != nil {
+		minimalMetadata[MetaKeyVersion] = fmt.Sprintf("%d", envelope.KeyVersion)
+		if envelope.KeyID != "" {
+			minimalMetadata[MetaKMSKeyID] = envelope.KeyID
+		}
+		if envelope.Provider != "" {
+			minimalMetadata[MetaKMSProvider] = envelope.Provider
+		}
+		minimalMetadata[MetaWrappedKeyCiphertext] = encodeBase64(envelope.Ciphertext)
 	}
 
 	// Copy original user metadata
@@ -868,18 +1015,47 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 		return nil, nil, fmt.Errorf("unsupported algorithm %s (not in supported list)", algorithm)
 	}
 
-	// Derive key from password and salt
-	key, err := e.deriveKey(salt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
-	}
-	defer zeroBytes(key)
-
-	// Adjust key size for algorithm
 	keySize := aesKeySize
 	if algorithm == AlgorithmChaCha20Poly1305 {
 		keySize = chacha20KeySize
 	}
+
+	var (
+		key []byte
+	)
+
+	if e.kmsManager != nil && metadata[MetaWrappedKeyCiphertext] != "" {
+		wrapped, err := decodeBase64(metadata[MetaWrappedKeyCiphertext])
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decode wrapped data key: %w", err)
+		}
+		env := &KeyEnvelope{
+			KeyID:      metadata[MetaKMSKeyID],
+			KeyVersion: parseKeyVersion(metadata[MetaKeyVersion]),
+			Provider:   metadata[MetaKMSProvider],
+			Ciphertext: wrapped,
+		}
+		key, err = e.kmsManager.UnwrapKey(context.Background(), env, metadata)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to unwrap data key: %w", err)
+		}
+	} else {
+		key, err = e.deriveKey(salt)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+		}
+		if len(key) != keySize {
+			adjustedKey := e.bufferPool.Get32()
+			copy(adjustedKey, key)
+			if len(key) < keySize {
+				copy(adjustedKey[len(key):], key[:keySize-len(key)])
+			}
+			zeroBytes(key)
+			key = adjustedKey
+			defer e.bufferPool.Put32(adjustedKey)
+		}
+	}
+	defer zeroBytes(key)
 	if len(key) != keySize {
 		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
@@ -929,7 +1105,7 @@ func (e *engine) decryptChunked(reader io.Reader, metadata map[string]string) (i
 			if _, err1 := fmt.Sscanf(chunkCount, "%d", &count); err1 == nil {
 				if _, err2 := fmt.Sscanf(chunkSize, "%d", &size); err2 == nil {
 					// Approximate original size (last chunk might be smaller)
-					approxSize := int64((count - 1) * size + size)
+					approxSize := int64((count-1)*size + size)
 					decMetadata["Content-Length"] = fmt.Sprintf("%d", approxSize)
 				}
 			}
@@ -1001,18 +1177,47 @@ func (e *engine) DecryptRange(reader io.Reader, metadata map[string]string, plai
 		return nil, nil, fmt.Errorf("unsupported algorithm %s", algorithm)
 	}
 
-	// Derive key from password and salt
-	key, err := e.deriveKey(salt)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to derive key: %w", err)
-	}
-	defer zeroBytes(key)
-
-	// Adjust key size for algorithm
 	keySize := aesKeySize
 	if algorithm == AlgorithmChaCha20Poly1305 {
 		keySize = chacha20KeySize
 	}
+
+	var (
+		key []byte
+	)
+
+	if e.kmsManager != nil && expandedMetadata[MetaWrappedKeyCiphertext] != "" {
+		wrapped, err := decodeBase64(expandedMetadata[MetaWrappedKeyCiphertext])
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to decode wrapped data key: %w", err)
+		}
+		env := &KeyEnvelope{
+			KeyID:      expandedMetadata[MetaKMSKeyID],
+			KeyVersion: parseKeyVersion(expandedMetadata[MetaKeyVersion]),
+			Provider:   expandedMetadata[MetaKMSProvider],
+			Ciphertext: wrapped,
+		}
+		key, err = e.kmsManager.UnwrapKey(context.Background(), env, expandedMetadata)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to unwrap data key: %w", err)
+		}
+	} else {
+		key, err = e.deriveKey(salt)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to derive key: %w", err)
+		}
+		if len(key) != keySize {
+			adjustedKey := e.bufferPool.Get32()
+			copy(adjustedKey, key)
+			if len(key) < keySize {
+				copy(adjustedKey[len(key):], key[:keySize-len(key)])
+			}
+			zeroBytes(key)
+			key = adjustedKey
+			defer e.bufferPool.Put32(adjustedKey)
+		}
+	}
+	defer zeroBytes(key)
 	if len(key) != keySize {
 		adjustedKey := e.bufferPool.Get32()
 		copy(adjustedKey, key)
@@ -1169,7 +1374,7 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 
 	// Build AAD for authentication
 	aad := buildAAD(algorithm, salt, nonce, map[string]string{
-		"Content-Type": contentType,
+		"Content-Type":   contentType,
 		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
 	})
 
@@ -1178,13 +1383,13 @@ func (e *engine) encryptWithMetadataFallback(plaintext []byte, fullMetadata map[
 
 	// Create minimal header metadata
 	minimalMetadata := map[string]string{
-		MetaEncrypted:       "true",
-		MetaFallbackMode:    "true",
-		MetaAlgorithm:       algorithm,
-		MetaKeySalt:         encodeBase64(salt),
-		MetaIV:              encodeBase64(nonce),
-		MetaOriginalSize:    fmt.Sprintf("%d", originalSize),
-		MetaOriginalETag:    originalETag,
+		MetaEncrypted:    "true",
+		MetaFallbackMode: "true",
+		MetaAlgorithm:    algorithm,
+		MetaKeySalt:      encodeBase64(salt),
+		MetaIV:           encodeBase64(nonce),
+		MetaOriginalSize: fmt.Sprintf("%d", originalSize),
+		MetaOriginalETag: originalETag,
 	}
 
 	// Copy original user metadata
@@ -1265,7 +1470,7 @@ func (e *engine) decryptWithMetadataFallback(reader io.Reader, metadata map[stri
 	contentType := metadata["Content-Type"]
 	originalSize := metadata[MetaOriginalSize]
 	aad := buildAAD(algorithm, salt, iv, map[string]string{
-		"Content-Type": contentType,
+		"Content-Type":   contentType,
 		MetaOriginalSize: originalSize,
 	})
 
@@ -1369,6 +1574,9 @@ func isEncryptionMetadata(key string) bool {
 		key == MetaChunkCount ||
 		key == MetaManifest ||
 		key == MetaKeyVersion ||
+		key == MetaWrappedKeyCiphertext ||
+		key == MetaKMSKeyID ||
+		key == MetaKMSProvider ||
 		key == MetaFallbackMode ||
 		key == MetaFallbackPointer
 }
@@ -1384,28 +1592,28 @@ func isCompressionMetadata(key string) bool {
 // buildAAD constructs additional authenticated data from stable metadata fields.
 // Fields included: algorithm, salt, nonce, keyVersion (if present), content-type (if present), original-size (if present).
 func buildAAD(algorithm string, salt, nonce []byte, meta map[string]string) []byte {
-    // Use a simple canonical concatenation with separators.
-    // Note: All values must be stable between encrypt/decrypt.
-    var b bytes.Buffer
-    b.WriteString("alg:")
-    b.WriteString(algorithm)
-    b.WriteString("|salt:")
-    b.WriteString(encodeBase64(salt))
-    b.WriteString("|iv:")
-    b.WriteString(encodeBase64(nonce))
-    if kv := meta[MetaKeyVersion]; kv != "" {
-        b.WriteString("|kv:")
-        b.WriteString(kv)
-    }
-    if ct := meta["Content-Type"]; ct != "" {
-        b.WriteString("|ct:")
-        b.WriteString(ct)
-    }
-    if osz := meta[MetaOriginalSize]; osz != "" {
-        b.WriteString("|osz:")
-        b.WriteString(osz)
-    }
-    return b.Bytes()
+	// Use a simple canonical concatenation with separators.
+	// Note: All values must be stable between encrypt/decrypt.
+	var b bytes.Buffer
+	b.WriteString("alg:")
+	b.WriteString(algorithm)
+	b.WriteString("|salt:")
+	b.WriteString(encodeBase64(salt))
+	b.WriteString("|iv:")
+	b.WriteString(encodeBase64(nonce))
+	if kv := meta[MetaKeyVersion]; kv != "" {
+		b.WriteString("|kv:")
+		b.WriteString(kv)
+	}
+	if ct := meta["Content-Type"]; ct != "" {
+		b.WriteString("|ct:")
+		b.WriteString(ct)
+	}
+	if osz := meta[MetaOriginalSize]; osz != "" {
+		b.WriteString("|osz:")
+		b.WriteString(osz)
+	}
+	return b.Bytes()
 }
 
 // zeroBytes overwrites a byte slice with zeros for secure memory cleanup.
@@ -1413,6 +1621,16 @@ func zeroBytes(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+func parseKeyVersion(value string) int {
+	if value == "" {
+		return 0
+	}
+	if v, err := strconv.Atoi(value); err == nil {
+		return v
+	}
+	return 0
 }
 
 // encodeMetadataToJSON encodes metadata map to JSON bytes
@@ -1426,4 +1644,3 @@ func decodeMetadataFromJSON(data []byte) (map[string]string, error) {
 	err := json.Unmarshal(data, &metadata)
 	return metadata, err
 }
-

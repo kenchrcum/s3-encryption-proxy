@@ -17,51 +17,71 @@ import (
 
 // Config holds the complete application configuration.
 type Config struct {
-	ListenAddr   string            `yaml:"listen_addr" env:"LISTEN_ADDR"`
-	LogLevel     string            `yaml:"log_level" env:"LOG_LEVEL"`
-	ProxiedBucket string           `yaml:"proxied_bucket" env:"PROXIED_BUCKET"` // If set, only this bucket will be accessible
-	Backend      BackendConfig   `yaml:"backend"`
-	Encryption   EncryptionConfig  `yaml:"encryption"`
-	Compression  CompressionConfig `yaml:"compression"`
-	Cache        CacheConfig       `yaml:"cache"`
-	Audit        AuditConfig       `yaml:"audit"`
-	TLS          TLSConfig         `yaml:"tls"`
-	Server       ServerConfig      `yaml:"server"`
-	RateLimit    RateLimitConfig   `yaml:"rate_limit"`
-	Tracing      TracingConfig     `yaml:"tracing"`
-	Logging      LoggingConfig     `yaml:"logging"`
+	ListenAddr    string            `yaml:"listen_addr" env:"LISTEN_ADDR"`
+	LogLevel      string            `yaml:"log_level" env:"LOG_LEVEL"`
+	ProxiedBucket string            `yaml:"proxied_bucket" env:"PROXIED_BUCKET"` // If set, only this bucket will be accessible
+	Backend       BackendConfig     `yaml:"backend"`
+	Encryption    EncryptionConfig  `yaml:"encryption"`
+	Compression   CompressionConfig `yaml:"compression"`
+	Cache         CacheConfig       `yaml:"cache"`
+	Audit         AuditConfig       `yaml:"audit"`
+	TLS           TLSConfig         `yaml:"tls"`
+	Server        ServerConfig      `yaml:"server"`
+	RateLimit     RateLimitConfig   `yaml:"rate_limit"`
+	Tracing       TracingConfig     `yaml:"tracing"`
+	Logging       LoggingConfig     `yaml:"logging"`
 }
 
 // BackendConfig holds S3 backend configuration.
 type BackendConfig struct {
-	Endpoint  string `yaml:"endpoint" env:"BACKEND_ENDPOINT"`
-	Region    string `yaml:"region" env:"BACKEND_REGION"`
-	AccessKey string `yaml:"access_key" env:"BACKEND_ACCESS_KEY"`
-	SecretKey string `yaml:"secret_key" env:"BACKEND_SECRET_KEY"`
-	Provider  string `yaml:"provider" env:"BACKEND_PROVIDER"` // aws, wasabi, hetzner, minio, digitalocean, backblaze, cloudflare, linode, scaleway, oracle, idrive
-	UseSSL    bool   `yaml:"use_ssl" env:"BACKEND_USE_SSL"`
-    UsePathStyle bool `yaml:"use_path_style" env:"BACKEND_USE_PATH_STYLE"`
-    // Compatibility options for backends with metadata restrictions
-    FilterMetadataKeys []string `yaml:"filter_metadata_keys" env:"BACKEND_FILTER_METADATA_KEYS"` // Comma-separated list of metadata keys to filter out
-    // Credential passthrough: if enabled, use credentials from client requests instead of configured credentials
-    // This allows respecting client access rights while still using configured credentials as fallback
-    UseClientCredentials bool `yaml:"use_client_credentials" env:"BACKEND_USE_CLIENT_CREDENTIALS"`
+	Endpoint     string `yaml:"endpoint" env:"BACKEND_ENDPOINT"`
+	Region       string `yaml:"region" env:"BACKEND_REGION"`
+	AccessKey    string `yaml:"access_key" env:"BACKEND_ACCESS_KEY"`
+	SecretKey    string `yaml:"secret_key" env:"BACKEND_SECRET_KEY"`
+	Provider     string `yaml:"provider" env:"BACKEND_PROVIDER"` // aws, wasabi, hetzner, minio, digitalocean, backblaze, cloudflare, linode, scaleway, oracle, idrive
+	UseSSL       bool   `yaml:"use_ssl" env:"BACKEND_USE_SSL"`
+	UsePathStyle bool   `yaml:"use_path_style" env:"BACKEND_USE_PATH_STYLE"`
+	// Compatibility options for backends with metadata restrictions
+	FilterMetadataKeys []string `yaml:"filter_metadata_keys" env:"BACKEND_FILTER_METADATA_KEYS"` // Comma-separated list of metadata keys to filter out
+	// Credential passthrough: if enabled, use credentials from client requests instead of configured credentials
+	// This allows respecting client access rights while still using configured credentials as fallback
+	UseClientCredentials bool `yaml:"use_client_credentials" env:"BACKEND_USE_CLIENT_CREDENTIALS"`
 }
 
 // EncryptionConfig holds encryption-related configuration.
 type EncryptionConfig struct {
-	Password           string   `yaml:"password" env:"ENCRYPTION_PASSWORD"`
-	KeyFile            string   `yaml:"key_file" env:"ENCRYPTION_KEY_FILE"`
-	PreferredAlgorithm string   `yaml:"preferred_algorithm" env:"ENCRYPTION_PREFERRED_ALGORITHM"`
-	SupportedAlgorithms []string `yaml:"supported_algorithms" env:"ENCRYPTION_SUPPORTED_ALGORITHMS"`
-	KeyManager         KeyManagerConfig `yaml:"key_manager"`
-	ChunkedMode        bool     `yaml:"chunked_mode" env:"ENCRYPTION_CHUNKED_MODE"` // Enable chunked/streaming encryption
-	ChunkSize          int      `yaml:"chunk_size" env:"ENCRYPTION_CHUNK_SIZE"`     // Size of each encryption chunk in bytes
+	Password            string           `yaml:"password" env:"ENCRYPTION_PASSWORD"`
+	KeyFile             string           `yaml:"key_file" env:"ENCRYPTION_KEY_FILE"`
+	PreferredAlgorithm  string           `yaml:"preferred_algorithm" env:"ENCRYPTION_PREFERRED_ALGORITHM"`
+	SupportedAlgorithms []string         `yaml:"supported_algorithms" env:"ENCRYPTION_SUPPORTED_ALGORITHMS"`
+	KeyManager          KeyManagerConfig `yaml:"key_manager"`
+	ChunkedMode         bool             `yaml:"chunked_mode" env:"ENCRYPTION_CHUNKED_MODE"` // Enable chunked/streaming encryption
+	ChunkSize           int              `yaml:"chunk_size" env:"ENCRYPTION_CHUNK_SIZE"`     // Size of each encryption chunk in bytes
 }
 
 // KeyManagerConfig holds key manager (KMS) configuration.
 type KeyManagerConfig struct {
-	Enabled bool `yaml:"enabled" env:"KEY_MANAGER_ENABLED"` // Enable key rotation/KMS mode
+	Enabled        bool          `yaml:"enabled" env:"KEY_MANAGER_ENABLED"`
+	Provider       string        `yaml:"provider" env:"KEY_MANAGER_PROVIDER"`
+	DualReadWindow int           `yaml:"dual_read_window" env:"KEY_MANAGER_DUAL_READ_WINDOW"`
+	Cosmian        CosmianConfig `yaml:"cosmian"`
+}
+
+// CosmianConfig captures settings for the Cosmian KMIP integration.
+type CosmianConfig struct {
+	Endpoint           string                `yaml:"endpoint" env:"COSMIAN_KMS_ENDPOINT"`
+	Timeout            time.Duration         `yaml:"timeout" env:"COSMIAN_KMS_TIMEOUT"`
+	Keys               []CosmianKeyReference `yaml:"keys"`
+	ClientCert         string                `yaml:"client_cert" env:"COSMIAN_KMS_CLIENT_CERT"`
+	ClientKey          string                `yaml:"client_key" env:"COSMIAN_KMS_CLIENT_KEY"`
+	CACert             string                `yaml:"ca_cert" env:"COSMIAN_KMS_CA_CERT"`
+	InsecureSkipVerify bool                  `yaml:"insecure_skip_verify" env:"COSMIAN_KMS_INSECURE_SKIP_VERIFY"`
+}
+
+// CosmianKeyReference maps wrapping key identifiers to metadata versions.
+type CosmianKeyReference struct {
+	ID      string `yaml:"id"`
+	Version int    `yaml:"version"`
 }
 
 // CompressionConfig holds compression settings.
@@ -101,8 +121,8 @@ type RateLimitConfig struct {
 // CacheConfig holds cache configuration.
 type CacheConfig struct {
 	Enabled    bool          `yaml:"enabled" env:"CACHE_ENABLED"`
-	MaxSize    int64         `yaml:"max_size" env:"CACHE_MAX_SIZE"`      // Max size in bytes
-	MaxItems   int           `yaml:"max_items" env:"CACHE_MAX_ITEMS"`   // Max number of items
+	MaxSize    int64         `yaml:"max_size" env:"CACHE_MAX_SIZE"`       // Max size in bytes
+	MaxItems   int           `yaml:"max_items" env:"CACHE_MAX_ITEMS"`     // Max number of items
 	DefaultTTL time.Duration `yaml:"default_ttl" env:"CACHE_DEFAULT_TTL"` // Default TTL
 }
 
@@ -114,14 +134,14 @@ type AuditConfig struct {
 
 // TracingConfig holds OpenTelemetry tracing configuration.
 type TracingConfig struct {
-	Enabled          bool    `yaml:"enabled" env:"TRACING_ENABLED"`                     // Enable/disable tracing
-	ServiceName      string  `yaml:"service_name" env:"TRACING_SERVICE_NAME"`           // Service name for traces
-	ServiceVersion   string  `yaml:"service_version" env:"TRACING_SERVICE_VERSION"`     // Service version
-	Exporter         string  `yaml:"exporter" env:"TRACING_EXPORTER"`                   // Exporter type: stdout, jaeger, otlp
-	JaegerEndpoint   string  `yaml:"jaeger_endpoint" env:"TRACING_JAEGER_ENDPOINT"`     // Jaeger collector endpoint
-	OtlpEndpoint     string  `yaml:"otlp_endpoint" env:"TRACING_OTLP_ENDPOINT"`         // OTLP gRPC endpoint
-	SamplingRatio    float64 `yaml:"sampling_ratio" env:"TRACING_SAMPLING_RATIO"`       // Sampling ratio (0.0-1.0)
-	RedactSensitive  bool    `yaml:"redact_sensitive" env:"TRACING_REDACT_SENSITIVE"`   // Redact sensitive data in spans
+	Enabled         bool    `yaml:"enabled" env:"TRACING_ENABLED"`                   // Enable/disable tracing
+	ServiceName     string  `yaml:"service_name" env:"TRACING_SERVICE_NAME"`         // Service name for traces
+	ServiceVersion  string  `yaml:"service_version" env:"TRACING_SERVICE_VERSION"`   // Service version
+	Exporter        string  `yaml:"exporter" env:"TRACING_EXPORTER"`                 // Exporter type: stdout, jaeger, otlp
+	JaegerEndpoint  string  `yaml:"jaeger_endpoint" env:"TRACING_JAEGER_ENDPOINT"`   // Jaeger collector endpoint
+	OtlpEndpoint    string  `yaml:"otlp_endpoint" env:"TRACING_OTLP_ENDPOINT"`       // OTLP gRPC endpoint
+	SamplingRatio   float64 `yaml:"sampling_ratio" env:"TRACING_SAMPLING_RATIO"`     // Sampling ratio (0.0-1.0)
+	RedactSensitive bool    `yaml:"redact_sensitive" env:"TRACING_REDACT_SENSITIVE"` // Redact sensitive data in spans
 }
 
 // LoggingConfig holds access logging configuration.
@@ -135,6 +155,12 @@ func LoadConfig(path string) (*Config, error) {
 	config := &Config{
 		ListenAddr: ":8080",
 		LogLevel:   "info",
+		Encryption: EncryptionConfig{
+			KeyManager: KeyManagerConfig{
+				Provider:       "cosmian",
+				DualReadWindow: 1,
+			},
+		},
 		Backend: BackendConfig{
 			Endpoint: "", // Leave empty for AWS default, or set for any S3-compatible endpoint
 			Region:   "us-east-1",
@@ -147,12 +173,12 @@ func LoadConfig(path string) (*Config, error) {
 			Level:     6,
 		},
 		Server: ServerConfig{
-			ReadTimeout:            15 * time.Second,
-			WriteTimeout:           15 * time.Second,
-			IdleTimeout:            60 * time.Second,
-			ReadHeaderTimeout:      10 * time.Second,
-			MaxHeaderBytes:         1 << 20, // 1MB
-			DisableMultipartUploads: false, // Allow multipart uploads by default for compatibility
+			ReadTimeout:             15 * time.Second,
+			WriteTimeout:            15 * time.Second,
+			IdleTimeout:             60 * time.Second,
+			ReadHeaderTimeout:       10 * time.Second,
+			MaxHeaderBytes:          1 << 20, // 1MB
+			DisableMultipartUploads: false,   // Allow multipart uploads by default for compatibility
 		},
 		RateLimit: RateLimitConfig{
 			Enabled: false,
@@ -230,16 +256,16 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("BACKEND_PROVIDER"); v != "" {
 		config.Backend.Provider = v
 	}
-    if v := os.Getenv("BACKEND_USE_PATH_STYLE"); v != "" {
-        config.Backend.UsePathStyle = v == "true" || v == "1"
-    }
-    if v := os.Getenv("BACKEND_FILTER_METADATA_KEYS"); v != "" {
-        // Comma-separated list of metadata keys to filter out
-        config.Backend.FilterMetadataKeys = strings.Split(v, ",")
-        for i := range config.Backend.FilterMetadataKeys {
-            config.Backend.FilterMetadataKeys[i] = strings.TrimSpace(config.Backend.FilterMetadataKeys[i])
-        }
-    }
+	if v := os.Getenv("BACKEND_USE_PATH_STYLE"); v != "" {
+		config.Backend.UsePathStyle = v == "true" || v == "1"
+	}
+	if v := os.Getenv("BACKEND_FILTER_METADATA_KEYS"); v != "" {
+		// Comma-separated list of metadata keys to filter out
+		config.Backend.FilterMetadataKeys = strings.Split(v, ",")
+		for i := range config.Backend.FilterMetadataKeys {
+			config.Backend.FilterMetadataKeys[i] = strings.TrimSpace(config.Backend.FilterMetadataKeys[i])
+		}
+	}
 	if v := os.Getenv("ENCRYPTION_PASSWORD"); v != "" {
 		config.Encryption.Password = v
 	}
@@ -258,6 +284,37 @@ func loadFromEnv(config *Config) {
 	}
 	if v := os.Getenv("KEY_MANAGER_ENABLED"); v != "" {
 		config.Encryption.KeyManager.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("KEY_MANAGER_PROVIDER"); v != "" {
+		config.Encryption.KeyManager.Provider = v
+	}
+	if v := os.Getenv("KEY_MANAGER_DUAL_READ_WINDOW"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			config.Encryption.KeyManager.DualReadWindow = n
+		}
+	}
+	if v := os.Getenv("COSMIAN_KMS_ENDPOINT"); v != "" {
+		config.Encryption.KeyManager.Cosmian.Endpoint = v
+	}
+	if v := os.Getenv("COSMIAN_KMS_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Encryption.KeyManager.Cosmian.Timeout = d
+		}
+	}
+	if v := os.Getenv("COSMIAN_KMS_CLIENT_CERT"); v != "" {
+		config.Encryption.KeyManager.Cosmian.ClientCert = v
+	}
+	if v := os.Getenv("COSMIAN_KMS_CLIENT_KEY"); v != "" {
+		config.Encryption.KeyManager.Cosmian.ClientKey = v
+	}
+	if v := os.Getenv("COSMIAN_KMS_CA_CERT"); v != "" {
+		config.Encryption.KeyManager.Cosmian.CACert = v
+	}
+	if v := os.Getenv("COSMIAN_KMS_INSECURE_SKIP_VERIFY"); v != "" {
+		config.Encryption.KeyManager.Cosmian.InsecureSkipVerify = v == "true" || v == "1"
+	}
+	if v := os.Getenv("COSMIAN_KMS_KEYS"); v != "" {
+		config.Encryption.KeyManager.Cosmian.Keys = parseCosmianKeyRefs(v)
 	}
 	if v := os.Getenv("TLS_ENABLED"); v != "" {
 		config.TLS.Enabled = v == "true" || v == "1"
@@ -388,6 +445,31 @@ func loadFromEnv(config *Config) {
 	}
 }
 
+func parseCosmianKeyRefs(value string) []CosmianKeyReference {
+	parts := strings.Split(value, ",")
+	refs := make([]CosmianKeyReference, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		ref := CosmianKeyReference{}
+		if strings.Contains(part, ":") {
+			pieces := strings.SplitN(part, ":", 2)
+			ref.ID = strings.TrimSpace(pieces[0])
+			if len(pieces) == 2 {
+				if n, err := strconv.Atoi(strings.TrimSpace(pieces[1])); err == nil {
+					ref.Version = n
+				}
+			}
+		} else {
+			ref.ID = part
+		}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
 // Validate validates the configuration and returns an error if invalid.
 func (c *Config) Validate() error {
 	if c.ListenAddr == "" {
@@ -424,7 +506,7 @@ func (c *Config) Validate() error {
 		}
 	}
 
-    // Validate TLS configuration
+	// Validate TLS configuration
 	if c.TLS.Enabled {
 		if c.TLS.CertFile == "" {
 			return fmt.Errorf("tls.cert_file is required when TLS is enabled")
@@ -435,58 +517,75 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate encryption algorithms policy
-    allowed := map[string]bool{
-        "AES256-GCM":         true,
-        "ChaCha20-Poly1305": true,
-    }
-    if alg := strings.TrimSpace(c.Encryption.PreferredAlgorithm); alg != "" {
-        if !allowed[alg] {
-            return fmt.Errorf("invalid encryption.preferred_algorithm: %s", alg)
-        }
-    }
-    if len(c.Encryption.SupportedAlgorithms) > 0 {
-        for _, alg := range c.Encryption.SupportedAlgorithms {
-            if !allowed[strings.TrimSpace(alg)] {
-                return fmt.Errorf("invalid entry in encryption.supported_algorithms: %s", alg)
-            }
-        }
-    }
+	allowed := map[string]bool{
+		"AES256-GCM":        true,
+		"ChaCha20-Poly1305": true,
+	}
+	if alg := strings.TrimSpace(c.Encryption.PreferredAlgorithm); alg != "" {
+		if !allowed[alg] {
+			return fmt.Errorf("invalid encryption.preferred_algorithm: %s", alg)
+		}
+	}
+	if len(c.Encryption.SupportedAlgorithms) > 0 {
+		for _, alg := range c.Encryption.SupportedAlgorithms {
+			if !allowed[strings.TrimSpace(alg)] {
+				return fmt.Errorf("invalid entry in encryption.supported_algorithms: %s", alg)
+			}
+		}
+	}
 
-    // Validate tracing configuration
-    if c.Tracing.Enabled {
-        if c.Tracing.ServiceName == "" {
-            return fmt.Errorf("tracing.service_name is required when tracing is enabled")
-        }
-        validExporters := map[string]bool{
-            "stdout": true,
-            "jaeger": true,
-            "otlp":   true,
-        }
-        if !validExporters[c.Tracing.Exporter] {
-            return fmt.Errorf("invalid tracing.exporter: %s (must be stdout, jaeger, or otlp)", c.Tracing.Exporter)
-        }
-        if c.Tracing.SamplingRatio < 0.0 || c.Tracing.SamplingRatio > 1.0 {
-            return fmt.Errorf("tracing.sampling_ratio must be between 0.0 and 1.0")
-        }
-        if c.Tracing.Exporter == "jaeger" && c.Tracing.JaegerEndpoint == "" {
-            return fmt.Errorf("tracing.jaeger_endpoint is required when exporter is jaeger")
-        }
-        if c.Tracing.Exporter == "otlp" && c.Tracing.OtlpEndpoint == "" {
-            return fmt.Errorf("tracing.otlp_endpoint is required when exporter is otlp")
-        }
-    }
+	if c.Encryption.KeyManager.Enabled {
+		if c.Encryption.KeyManager.Provider == "" {
+			return fmt.Errorf("encryption.key_manager.provider is required when key manager is enabled")
+		}
+		switch strings.ToLower(c.Encryption.KeyManager.Provider) {
+		case "cosmian", "kmip":
+			if c.Encryption.KeyManager.Cosmian.Endpoint == "" {
+				return fmt.Errorf("encryption.key_manager.cosmian.endpoint is required")
+			}
+			if len(c.Encryption.KeyManager.Cosmian.Keys) == 0 {
+				return fmt.Errorf("encryption.key_manager.cosmian.keys must include at least one entry")
+			}
+		default:
+			return fmt.Errorf("unsupported key manager provider: %s", c.Encryption.KeyManager.Provider)
+		}
+	}
 
-    // Validate logging configuration
-    if c.Logging.AccessLogFormat != "" {
-        validFormats := map[string]bool{
-            "default": true,
-            "json":    true,
-            "clf":     true,
-        }
-        if !validFormats[c.Logging.AccessLogFormat] {
-            return fmt.Errorf("invalid logging.access_log_format: %s (must be default, json, or clf)", c.Logging.AccessLogFormat)
-        }
-    }
+	// Validate tracing configuration
+	if c.Tracing.Enabled {
+		if c.Tracing.ServiceName == "" {
+			return fmt.Errorf("tracing.service_name is required when tracing is enabled")
+		}
+		validExporters := map[string]bool{
+			"stdout": true,
+			"jaeger": true,
+			"otlp":   true,
+		}
+		if !validExporters[c.Tracing.Exporter] {
+			return fmt.Errorf("invalid tracing.exporter: %s (must be stdout, jaeger, or otlp)", c.Tracing.Exporter)
+		}
+		if c.Tracing.SamplingRatio < 0.0 || c.Tracing.SamplingRatio > 1.0 {
+			return fmt.Errorf("tracing.sampling_ratio must be between 0.0 and 1.0")
+		}
+		if c.Tracing.Exporter == "jaeger" && c.Tracing.JaegerEndpoint == "" {
+			return fmt.Errorf("tracing.jaeger_endpoint is required when exporter is jaeger")
+		}
+		if c.Tracing.Exporter == "otlp" && c.Tracing.OtlpEndpoint == "" {
+			return fmt.Errorf("tracing.otlp_endpoint is required when exporter is otlp")
+		}
+	}
+
+	// Validate logging configuration
+	if c.Logging.AccessLogFormat != "" {
+		validFormats := map[string]bool{
+			"default": true,
+			"json":    true,
+			"clf":     true,
+		}
+		if !validFormats[c.Logging.AccessLogFormat] {
+			return fmt.Errorf("invalid logging.access_log_format: %s (must be default, json, or clf)", c.Logging.AccessLogFormat)
+		}
+	}
 
 	return nil
 }

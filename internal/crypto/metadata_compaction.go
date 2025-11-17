@@ -112,6 +112,15 @@ func (c *MetadataCompactor) compactEncryptionMetadata(metadata map[string]string
 		if v := metadata[MetaKeyVersion]; v != "" {
 			compacted["x-amz-meta-kv"] = v // key version
 		}
+		if v := metadata[MetaWrappedKeyCiphertext]; v != "" {
+			compacted["x-amz-meta-wk"] = v // wrapped key
+		}
+		if v := metadata[MetaKMSKeyID]; v != "" {
+			compacted["x-amz-meta-kid"] = v // kms key id
+		}
+		if v := metadata[MetaKMSProvider]; v != "" {
+			compacted["x-amz-meta-kp"] = v // kms provider
+		}
 
 		// Compression metadata (only if present)
 		if v := metadata[MetaCompressionEnabled]; v != "" && v != "false" {
@@ -175,6 +184,15 @@ func (c *MetadataCompactor) expandEncryptionMetadata(metadata map[string]string)
 		if v := metadata["x-amz-meta-kv"]; v != "" {
 			expanded[MetaKeyVersion] = v
 		}
+		if v := metadata["x-amz-meta-wk"]; v != "" {
+			expanded[MetaWrappedKeyCiphertext] = v
+		}
+		if v := metadata["x-amz-meta-kid"]; v != "" {
+			expanded[MetaKMSKeyID] = v
+		}
+		if v := metadata["x-amz-meta-kp"]; v != "" {
+			expanded[MetaKMSProvider] = v
+		}
 		if v := metadata["x-amz-meta-ce"]; v != "" {
 			expanded[MetaCompressionEnabled] = v
 			if v := metadata["x-amz-meta-ca"]; v != "" {
@@ -205,7 +223,8 @@ func (c *MetadataCompactor) isCompactedKey(key string) bool {
 	compactedKeys := []string{
 		"x-amz-meta-e", "x-amz-meta-a", "x-amz-meta-s", "x-amz-meta-i",
 		"x-amz-meta-os", "x-amz-meta-oe", "x-amz-meta-c", "x-amz-meta-cs",
-		"x-amz-meta-cc", "x-amz-meta-m", "x-amz-meta-kv", "x-amz-meta-ce",
+		"x-amz-meta-cc", "x-amz-meta-m", "x-amz-meta-kv", "x-amz-meta-wk",
+		"x-amz-meta-kid", "x-amz-meta-kp", "x-amz-meta-ce",
 		"x-amz-meta-ca", "x-amz-meta-cos",
 	}
 
