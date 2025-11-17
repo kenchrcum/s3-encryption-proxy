@@ -10,6 +10,9 @@ server
 # Test binary
 *.test
 
+# Test output and baselines
+test/testdata/baselines/*.json
+
 # Output of the go coverage tool
 coverage.out
 coverage.html
