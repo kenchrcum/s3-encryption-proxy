@@ -80,18 +80,25 @@ func (m *cosmianKMIPJSONManager) WrapKey(ctx context.Context, plaintext []byte, 
 	defer cancel()
 
 	active := m.state.opts.Keys[0]
-	ciphertext, keyID, err := m.encrypt(ctx, active.ID, plaintext)
+	ciphertext, returnedKeyID, err := m.encrypt(ctx, active.ID, plaintext)
 	if err != nil {
 		return nil, err
 	}
 
+	// Use the key ID returned from KMS encrypt if available, as it might be the canonical ID
+	// that the KMS expects for decrypt operations
+	finalKeyID := active.ID
+	if returnedKeyID != "" && returnedKeyID != active.ID {
+		finalKeyID = returnedKeyID
+	}
+
 	version := active.Version
-	if ref, ok := m.state.keyLookup[keyID]; ok {
+	if ref, ok := m.state.keyLookup[finalKeyID]; ok {
 		version = ref.Version
 	}
 
 	return &KeyEnvelope{
-		KeyID:      keyID,
+		KeyID:      finalKeyID,
 		KeyVersion: version,
 		Provider:   m.Provider(),
 		Ciphertext: ciphertext,
@@ -116,9 +123,16 @@ func (m *cosmianKMIPJSONManager) UnwrapKey(ctx context.Context, envelope *KeyEnv
 
 	var lastErr error
 	attempts := 0
+	maxAttempts := m.state.opts.DualReadWindow + 1
+	if maxAttempts <= 0 {
+		maxAttempts = len(candidates) // Try all if DualReadWindow is 0 or negative
+	}
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
+		}
+		if attempts >= maxAttempts {
+			break
 		}
 		data, err := m.decrypt(ctx, candidate, envelope.Ciphertext)
 		if err == nil {
@@ -126,9 +140,6 @@ func (m *cosmianKMIPJSONManager) UnwrapKey(ctx context.Context, envelope *KeyEnv
 		}
 		lastErr = err
 		attempts++
-		if attempts > 0 && attempts > m.state.opts.DualReadWindow+1 {
-			break
-		}
 	}
 	if lastErr == nil {
 		lastErr = errors.New("kms: decrypt failed with no attempts recorded")
@@ -187,6 +198,11 @@ func (m *cosmianKMIPJSONManager) encrypt(ctx context.Context, keyID string, plai
 			keyValue = v
 		}
 	}
+	
+	// Note: For NIST Key Wrap, the IVCounterNonce is typically not returned in the response
+	// and should be the same fixed value (0xA6A6A6A6A6A6A6A6) for both encrypt and decrypt.
+	// We use defaultKeyWrapIV for both operations, which should be correct.
+	
 	return ciphertext, keyValue, nil
 }
 
@@ -252,6 +268,19 @@ func (m *cosmianKMIPJSONManager) doRequest(ctx context.Context, payload kmipJSON
 	var node kmipJSONResponseNode
 	if err := json.Unmarshal(respBody, &node); err != nil {
 		return nil, fmt.Errorf("kms: invalid KMIP JSON response: %w", err)
+	}
+	// Check if response indicates an error (KMIP error responses have tag "Error" or "ErrorResponse")
+	if strings.EqualFold(node.Tag, "Error") || strings.EqualFold(node.Tag, "ErrorResponse") {
+		// Try to extract error message from response
+		children, _ := node.children()
+		msgNode := findKMIPChild(children, "Message")
+		msg := "unknown error"
+		if msgNode != nil {
+			if v, err := msgNode.stringValue(); err == nil {
+				msg = v
+			}
+		}
+		return nil, fmt.Errorf("kms: KMIP operation failed: %s", msg)
 	}
 	return &node, nil
 }

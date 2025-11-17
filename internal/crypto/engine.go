@@ -408,6 +408,28 @@ func (e *engine) Encrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	})
 	// Encrypt the data using AEAD with AAD
 	ciphertext := gcm.Seal(nil, nonce, dataToEncrypt, aad)
+	
+	// Debug: log encryption info for troubleshooting
+	if len(ciphertext) > 0 {
+		preview := ""
+		if len(ciphertext) <= 32 {
+			preview = fmt.Sprintf("%x", ciphertext)
+		} else {
+			preview = fmt.Sprintf("%x...", ciphertext[:32])
+		}
+		saltB64 := encodeBase64(salt)
+		ivB64 := encodeBase64(nonce)
+		saltPreview := saltB64
+		if len(saltPreview) > 20 {
+			saltPreview = saltPreview[:20]
+		}
+		ivPreview := ivB64
+		if len(ivPreview) > 20 {
+			ivPreview = ivPreview[:20]
+		}
+		fmt.Printf("DEBUG Encrypt: ciphertext len=%d, preview=%s, salt=%s..., iv=%s...\n", 
+			len(ciphertext), preview, saltPreview, ivPreview)
+	}
 
 	// Create encrypted reader from ciphertext
 	encryptedReader := bytes.NewReader(ciphertext)
@@ -529,9 +551,10 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 
 	if e.kmsManager != nil && expandedMetadata[MetaWrappedKeyCiphertext] != "" {
 		usingKMS = true
-		ciphertext, err := decodeBase64(expandedMetadata[MetaWrappedKeyCiphertext])
+		wrappedKeyB64 := expandedMetadata[MetaWrappedKeyCiphertext]
+		ciphertext, err := decodeBase64(wrappedKeyB64)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to decode wrapped data key: %w", err)
+			return nil, nil, fmt.Errorf("failed to decode wrapped data key (base64=%q, length=%d): %w", wrappedKeyB64, len(wrappedKeyB64), err)
 		}
 		env := &KeyEnvelope{
 			KeyID:      expandedMetadata[MetaKMSKeyID],
@@ -539,9 +562,25 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 			Provider:   expandedMetadata[MetaKMSProvider],
 			Ciphertext: ciphertext,
 		}
+		// Validate that we have the required fields
+		if env.KeyID == "" {
+			return nil, nil, fmt.Errorf("failed to unwrap data key: KMS key ID is missing from metadata")
+		}
+		if len(env.Ciphertext) == 0 {
+			return nil, nil, fmt.Errorf("failed to unwrap data key: wrapped key ciphertext is empty (base64 was: %q)", wrappedKeyB64)
+		}
+		// Validate wrapped key size (NIST Key Wrap produces ciphertext that is 8 bytes longer than plaintext)
+		// For a 32-byte AES-256 key, the wrapped key should be 40 bytes
+		if len(env.Ciphertext) < 32 || len(env.Ciphertext) > 64 {
+			return nil, nil, fmt.Errorf("failed to unwrap data key: wrapped key ciphertext has unexpected size %d bytes (expected 32-64 bytes for AES key wrap)", len(env.Ciphertext))
+		}
 		key, err = e.kmsManager.UnwrapKey(ctx, env, expandedMetadata)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to unwrap data key: %w", err)
+			return nil, nil, fmt.Errorf("failed to unwrap data key (keyID=%s, provider=%s, keyVersion=%d, wrappedKeySize=%d): %w", env.KeyID, env.Provider, env.KeyVersion, len(env.Ciphertext), err)
+		}
+		// Validate unwrapped key size
+		if len(key) != keySize {
+			return nil, nil, fmt.Errorf("failed to unwrap data key: KMS returned key of size %d, expected %d", len(key), keySize)
 		}
 	} else {
 		key, err = e.deriveKey(salt)
@@ -571,6 +610,21 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	ciphertext, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to read encrypted data: %w", err)
+	}
+	// Debug: log decryption parameters
+	saltB64 := expandedMetadata[MetaKeySalt]
+	ivB64 := expandedMetadata[MetaIV]
+	if saltB64 != "" && ivB64 != "" {
+		saltPreview := saltB64
+		if len(saltPreview) > 20 {
+			saltPreview = saltPreview[:20]
+		}
+		ivPreview := ivB64
+		if len(ivPreview) > 20 {
+			ivPreview = ivPreview[:20]
+		}
+		fmt.Printf("DEBUG Decrypt: ciphertext len=%d, salt=%s..., iv=%s..., algorithm=%s\n", 
+			len(ciphertext), saltPreview, ivPreview, algorithm)
 	}
 
 	// Build AAD from expanded metadata
@@ -618,7 +672,7 @@ func (e *engine) Decrypt(reader io.Reader, metadata map[string]string) (io.Reade
 	}
 
 	if openErr != nil {
-		return nil, nil, fmt.Errorf("failed to decrypt data: %w", openErr)
+		return nil, nil, fmt.Errorf("failed to decrypt data (algorithm=%s, keySize=%d, ivSize=%d, ciphertextSize=%d): %w", algorithm, len(key), len(iv), len(ciphertext), openErr)
 	}
 
 	// Create decrypted reader from plaintext

@@ -239,14 +239,29 @@ func (c *s3Client) PutObject(ctx context.Context, bucket, key string, reader io.
 	// For custom endpoints (Ceph/Hetzner), the SDK should still handle this correctly
 	convertedMeta := convertMetadata(metadata)
 
-	// Debug: log metadata keys being sent to SDK (for troubleshooting)
+	// Debug: log critical encryption metadata values being sent to SDK
+	// Check both full keys (if compaction didn't happen) and compacted keys
 	if len(convertedMeta) > 0 {
-		keys := make([]string, 0, len(convertedMeta))
-		for k := range convertedMeta {
-			keys = append(keys, k)
+		// Try full keys first, then compacted keys
+		keyMappings := map[string][]string{
+			"salt": {"encryption-key-salt", "s"},
+			"iv":   {"encryption-iv", "i"},
+			"algo": {"encryption-algorithm", "a"},
+			"wrapped": {"encryption-wrapped-key", "wk"},
+			"kms-id": {"encryption-kms-id", "kid"},
 		}
-		// Log at debug level (you can enable this if needed)
-		// fmt.Printf("DEBUG: Sending metadata keys to SDK: %v\n", keys)
+		for name, keys := range keyMappings {
+			for _, ck := range keys {
+				if v, ok := convertedMeta[ck]; ok {
+					preview := v
+					if len(preview) > 30 {
+						preview = preview[:30] + "..."
+					}
+					fmt.Printf("DEBUG PutObject %s/%s %s[%s]: %s (len=%d)\n", bucket, key, name, ck, preview, len(v))
+					break // Found it, move to next
+				}
+			}
+		}
 	}
 
 	input := &s3.PutObjectInput{
@@ -298,6 +313,31 @@ func (c *s3Client) GetObject(ctx context.Context, bucket, key string, versionID 
 	}
 
 	metadata := extractMetadata(result.Metadata)
+	
+	// Debug: log critical encryption metadata values for troubleshooting
+	// Check both full keys and compacted keys (after expansion)
+	if len(metadata) > 0 {
+		keyMappings := map[string][]string{
+			"salt": {"x-amz-meta-encryption-key-salt", "x-amz-meta-s"},
+			"iv":   {"x-amz-meta-encryption-iv", "x-amz-meta-i"},
+			"algo": {"x-amz-meta-encryption-algorithm", "x-amz-meta-a"},
+			"wrapped": {"x-amz-meta-encryption-wrapped-key", "x-amz-meta-wk"},
+			"kms-id": {"x-amz-meta-encryption-kms-id", "x-amz-meta-kid"},
+		}
+		for name, keys := range keyMappings {
+			for _, ck := range keys {
+				if v, ok := metadata[ck]; ok {
+					preview := v
+					if len(preview) > 30 {
+						preview = preview[:30] + "..."
+					}
+					fmt.Printf("DEBUG GetObject %s/%s %s[%s]: %s (len=%d)\n", bucket, key, name, ck, preview, len(v))
+					break // Found it, move to next
+				}
+			}
+		}
+	}
+	
 	if result.VersionId != nil {
 		metadata["x-amz-version-id"] = *result.VersionId
 	}
@@ -477,9 +517,11 @@ func extractMetadata(metadata map[string]string) map[string]string {
 	for k, v := range metadata {
 		// Add x-amz-meta- prefix if not already present
 		// SDK returns keys without prefix, but we use prefix internally
-		if len(k) > 11 && k[:11] == prefix {
+		// Use case-insensitive comparison as some S3 providers may normalize case
+		if len(k) >= len(prefix) && strings.EqualFold(k[:len(prefix)], prefix) {
 			// Already has prefix (shouldn't happen from SDK, but be safe)
-			result[k] = v
+			// Normalize to lowercase for consistency
+			result[strings.ToLower(k)] = v
 		} else {
 			// Add prefix
 			result[prefix+k] = v

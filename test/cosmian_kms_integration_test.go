@@ -253,8 +253,12 @@ func TestCosmianKMSKeyRotation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "1", encMetadata1[crypto.MetaKeyVersion])
 
+	// Store encrypted data as bytes for later use (reader gets consumed)
+	encryptedData1, err := io.ReadAll(encReader1)
+	require.NoError(t, err)
+
 	// Decrypt object encrypted with version 1
-	decReader1, _, err := engine.Decrypt(encReader1, encMetadata1)
+	decReader1, _, err := engine.Decrypt(bytes.NewReader(encryptedData1), encMetadata1)
 	require.NoError(t, err)
 	decrypted1, err := io.ReadAll(decReader1)
 	require.NoError(t, err)
@@ -297,7 +301,7 @@ func TestCosmianKMSKeyRotation(t *testing.T) {
 	require.Equal(t, plaintext2, decrypted2)
 
 	// Verify dual-read: decrypt version 1 object with version 2 manager
-	decReader1v2, _, err := engine2.Decrypt(encReader1, encMetadata1)
+	decReader1v2, _, err := engine2.Decrypt(bytes.NewReader(encryptedData1), encMetadata1)
 	require.NoError(t, err, "Dual-read window should allow decrypting with previous key version")
 	decrypted1v2, err := io.ReadAll(decReader1v2)
 	require.NoError(t, err)
@@ -855,8 +859,11 @@ func TestCosmianKMSGatewayIntegration(t *testing.T) {
 	key := "test-object"
 	content := []byte("Hello from gateway with Cosmian KMS!")
 
-	// Create bucket first
-	createBucket(t, gateway.URL, bucket)
+	// Create bucket directly in MinIO using AWS CLI
+	createBucketInMinIOForGateway(t, minioEndpoint, bucket)
+
+	// Give MinIO a moment to fully register the bucket
+	time.Sleep(1 * time.Second)
 
 	// Upload object
 	putURL := fmt.Sprintf("%s/%s/%s", gateway.URL, bucket, key)
@@ -1048,20 +1055,44 @@ func startMinIO(t *testing.T) (cleanup func(), endpoint string) {
 	}, endpoint
 }
 
-// createBucket creates a bucket in the S3 backend.
-func createBucket(t *testing.T, gatewayURL, bucket string) {
+// createBucketInMinIOForGateway creates a bucket directly in MinIO using AWS CLI.
+// This is needed because the gateway may not support bucket creation operations.
+func createBucketInMinIOForGateway(t *testing.T, minioEndpoint, bucket string) {
 	t.Helper()
 
-	// Use PUT on bucket endpoint to create it
-	putURL := fmt.Sprintf("%s/%s", gatewayURL, bucket)
-	req, err := http.NewRequest("PUT", putURL, nil)
-	require.NoError(t, err)
-
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	resp.Body.Close()
-	// Accept both 200 (created) and 409 (already exists)
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusConflict {
-		t.Logf("Warning: Bucket creation returned status %d", resp.StatusCode)
+	// Set AWS CLI configuration for MinIO
+	cmd := exec.Command("aws", "configure", "set", "aws_access_key_id", "minioadmin")
+	if err := cmd.Run(); err != nil {
+		t.Logf("Warning: Failed to configure AWS CLI access key: %v", err)
 	}
+
+	cmd = exec.Command("aws", "configure", "set", "aws_secret_access_key", "minioadmin")
+	if err := cmd.Run(); err != nil {
+		t.Logf("Warning: Failed to configure AWS CLI secret key: %v", err)
+	}
+
+	cmd = exec.Command("aws", "configure", "set", "region", "us-east-1")
+	if err := cmd.Run(); err != nil {
+		t.Logf("Warning: Failed to configure AWS CLI region: %v", err)
+	}
+
+	// Try to create bucket using AWS CLI
+	for attempts := 0; attempts < 5; attempts++ {
+		cmd := exec.Command("aws", "s3", "mb", fmt.Sprintf("s3://%s", bucket),
+			"--endpoint-url", minioEndpoint,
+			"--no-verify-ssl")
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			return
+		}
+		// Check if bucket already exists (which is OK)
+		outputStr := string(output)
+		if strings.Contains(outputStr, "BucketAlreadyOwnedByYou") || strings.Contains(outputStr, "BucketAlreadyExists") {
+			return
+		}
+		if attempts < 4 {
+			time.Sleep(time.Duration(attempts+1) * 500 * time.Millisecond)
+		}
+	}
+	t.Logf("Warning: Could not create bucket %s with AWS CLI, proceeding anyway", bucket)
 }

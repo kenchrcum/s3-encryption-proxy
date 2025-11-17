@@ -630,16 +630,12 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	}
 	defer reader.Close()
 
-	h.logger.WithFields(logrus.Fields{
-		"bucket": bucket,
-		"key": key,
-		"is_encrypted": h.encryptionEngine.IsEncrypted(metadata),
-	}).Debug("GET object retrieved from backend")
 
 	// Decrypt if encrypted
 	decryptStart := time.Now()
 	var decryptedReader io.Reader
 	var decMetadata map[string]string
+
 	
 	if useRangeOptimization && h.encryptionEngine.IsEncrypted(metadata) {
 		// Use range-optimized decryption (only decrypts needed chunks)

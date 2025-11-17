@@ -53,6 +53,15 @@ var (
 		CompactionStrategy:  "base64url",
 	}
 
+	ProviderBackblaze = &ProviderProfile{
+		Name:                "backblaze",
+		UserMetadataLimit:   2048, // S3-compatible, similar to AWS
+		SystemMetadataLimit: 0,
+		TotalHeaderLimit:    8192,
+		SupportsLongKeys:    true,
+		CompactionStrategy:  "base64url",
+	}
+
 // Default profile for unknown providers - no compaction by default for backward compatibility
 ProviderDefault = &ProviderProfile{
 	Name:                "default",
@@ -75,6 +84,8 @@ func GetProviderProfile(provider string) *ProviderProfile {
 		return ProviderWasabi
 	case "hetzner":
 		return ProviderHetzner
+	case "backblaze", "b2":
+		return ProviderBackblaze
 	default:
 		return ProviderDefault
 	}

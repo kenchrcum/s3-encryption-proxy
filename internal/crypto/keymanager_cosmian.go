@@ -194,9 +194,16 @@ func (m *cosmianKMIPManager) UnwrapKey(ctx context.Context, envelope *KeyEnvelop
 
 	var lastErr error
 	attempts := 0
+	maxAttempts := m.state.opts.DualReadWindow + 1
+	if maxAttempts <= 0 {
+		maxAttempts = len(candidates) // Try all if DualReadWindow is 0 or negative
+	}
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
+		}
+		if attempts >= maxAttempts {
+			break
 		}
 		resp, err := m.client.
 			Decrypt(candidate).
@@ -208,9 +215,6 @@ func (m *cosmianKMIPManager) UnwrapKey(ctx context.Context, envelope *KeyEnvelop
 		}
 		lastErr = err
 		attempts++
-		if attempts > 0 && attempts > m.state.opts.DualReadWindow+1 {
-			break
-		}
 	}
 
 	if lastErr == nil {
