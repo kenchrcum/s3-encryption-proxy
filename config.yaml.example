@@ -35,6 +35,38 @@ encryption:
   chunk_size: 65536   # Chunk size in bytes (default: 65536 = 64KB). Range: 16KB-1MB
   key_manager:
     enabled: false  # Set to true to enable key rotation/KMS mode (default: single password mode)
+    provider: "cosmian"  # KMS provider: "cosmian" (currently supported), "aws", "vault" (planned for v1.0)
+    dual_read_window: 1  # Number of previous key versions to try during rotation (default: 1)
+    cosmian:
+      # Cosmian KMIP endpoint (supports both binary and JSON protocols)
+      # RECOMMENDED: JSON/HTTP endpoint (tested and verified)
+      #   - Full URL format (recommended): "http://localhost:9998/kmip/2_1" or "https://kms.example.com/kmip/2_1"
+      #   - Base URL format (also works): "http://localhost:9998" (path /kmip/2_1 is auto-appended)
+      #   - No TLS client certificates required for HTTP (testing)
+      #   - TLS certificates required for HTTPS (production)
+      # ADVANCED: Binary KMIP endpoint (requires proper TLS/client certificates)
+      #   - Use host:port format: "localhost:5696" or "kms.example.com:5696"
+      #   - Requires proper TLS configuration (ca_cert, client_cert, client_key)
+      #   - Not fully tested in CI - use with caution
+      endpoint: ""  # Set via COSMIAN_KMS_ENDPOINT env var (recommended: "http://localhost:9998/kmip/2_1" or "http://localhost:9998")
+      timeout: "10s"  # Set via COSMIAN_KMS_TIMEOUT env var (default: 5s)
+      # Wrapping keys configuration - at least one key is required
+      # Format: YAML list of key references with ID and version
+      # For environment variables, use comma-separated format: "key1:1,key2:2"
+      keys:
+        # Example with single key:
+        # - id: "wrapping-key-1"  # Key ID from Cosmian KMS (get from KMS UI)
+        #   version: 1             # Version number for this key
+        # Example with multiple keys for rotation:
+        # - id: "wrapping-key-1"
+        #   version: 1
+        # - id: "wrapping-key-2"
+        #   version: 2
+      # TLS configuration (optional, for production deployments)
+      # ca_cert: "/path/to/ca.pem"  # Set via COSMIAN_KMS_CA_CERT env var
+      # client_cert: "/path/to/client.crt"  # Set via COSMIAN_KMS_CLIENT_CERT env var
+      # client_key: "/path/to/client.key"  # Set via COSMIAN_KMS_CLIENT_KEY env var
+      # insecure_skip_verify: false  # Set via COSMIAN_KMS_INSECURE_SKIP_VERIFY env var (for testing only)
 
 compression:
   enabled: false

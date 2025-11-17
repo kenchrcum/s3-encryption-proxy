@@ -21,10 +21,17 @@ The S3 Encryption Gateway supports two key management modes:
 ### Currently Supported (v0.5)
 
 - ✅ **Cosmian KMIP**: Fully implemented and tested
-  - Binary and JSON protocol support
+  - **JSON/HTTP protocol**: Fully tested and verified in CI
+    - Endpoint format: `http://host:9998/kmip/2_1` or `https://host:9998/kmip/2_1`
+    - No TLS client certificates required for HTTP
+    - TLS `ca_cert` recommended for HTTPS
+  - **Binary KMIP protocol**: Implemented but not fully tested in CI
+    - Endpoint format: `host:5696`
+    - Requires proper TLS configuration (`ca_cert`, `client_cert`, `client_key`) for mutual TLS
+    - Use with caution until fully tested
   - Dual-read window for key rotation
   - Health checks integrated into readiness endpoint
-  - Integration tests with Docker-based Cosmian KMS server
+  - Integration tests with Docker-based Cosmian KMS server (JSON/HTTP only)
 
 ### Planned for v1.0
 
@@ -67,16 +74,34 @@ At decrypt time the engine builds the same envelope and calls `UnwrapKey`. This 
 
 ### Cosmian KMIP Quick Start
 
-Cosmian publishes an all-in-one Docker image that exposes the HTTPS admin UI on port `9998` and a KMIP endpoint. The quickest way to start a local instance is:
+Cosmian publishes an all-in-one Docker image that exposes the HTTPS admin UI on port `9998` and KMIP endpoints on ports `5696` (binary) and `9998` (JSON/HTTP). The quickest way to start a local instance is:
 
 ```bash
 docker run -d --rm --name cosmian-kms \
   -p 5696:5696 -p 9998:9998 ghcr.io/cosmian/kms:latest
 ```
 
-Refer to the [Cosmian installation guide](https://docs.cosmian.com/key_management_system/installation/installation_getting_started/?utm_source=openai) for production-grade TLS and identity settings. Once the container is running, create a wrapping key via the UI, note its identifier, and add it under `encryption.key_manager.cosmian.keys` in the gateway configuration.
+**Recommended: JSON/HTTP Endpoint** (tested and verified):
+- Endpoint (full URL, recommended): `http://localhost:9998/kmip/2_1`
+- Endpoint (base URL, also works): `http://localhost:9998` (path `/kmip/2_1` is automatically appended)
+- No TLS client certificates required for HTTP (testing)
+- TLS `ca_cert` recommended for HTTPS (production)
+- Fully tested and verified in CI
 
-The repository ships with integration tests (`test/cosmian_kms_test.go`) and a lower-level unit suite (`internal/crypto/keymanager_test.go`) that exercise the KMIP flow using the upstream `kmiptest` harness. These tests run as part of `go test ./...` and ensure that wrapping/unwrapping as well as metadata propagation work before hitting a real appliance.
+**Advanced: Binary KMIP Endpoint** (requires TLS):
+- Endpoint: `localhost:5696`
+- Requires proper TLS configuration: `ca_cert`, `client_cert`, `client_key` (mutual TLS)
+- Not fully tested in CI - use with caution
+- Suitable for production with proper certificate management
+
+Once the container is running:
+1. Access the Cosmian KMS UI at http://localhost:9998/ui
+2. Create a wrapping key via the UI and note its identifier
+3. Configure the gateway with the key ID under `encryption.key_manager.cosmian.keys`
+
+Refer to the [Cosmian installation guide](https://docs.cosmian.com/key_management_system/installation/installation_getting_started/?utm_source=openai) for production-grade TLS and identity settings.
+
+The repository ships with integration tests (`test/cosmian_kms_integration_test.go`) that exercise the JSON/HTTP KMIP flow. These tests run as part of `go test ./...` or `make test-comprehensive` and ensure that wrapping/unwrapping as well as metadata propagation work correctly.
 
 ## Implementing a Custom KMS
 

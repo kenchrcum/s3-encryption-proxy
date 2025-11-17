@@ -229,28 +229,101 @@ COMPRESSION_ENABLED=true
 CACHE_ENABLED=true
 ```
 
-### External Key Manager (Cosmian)
+### External Key Manager (KMS) - Cosmian KMIP
 
-To exercise the new envelope-encryption flow you can point the gateway at a Cosmian KMIP server (self-hosted via Docker or another environment):
+The gateway supports external Key Management Systems (KMS) for envelope encryption with key rotation support. Currently, **Cosmian KMIP** is fully implemented and tested.
+
+#### Quick Start with Cosmian KMS
+
+1. **Start Cosmian KMS** (using Docker for local testing):
+
+```bash
+docker run -d --rm --name cosmian-kms \
+  -p 5696:5696 -p 9998:9998 \
+  ghcr.io/cosmian/kms:latest
+```
+
+2. **Create a wrapping key** via the Cosmian KMS UI (http://localhost:9998/ui) and note the key ID.
+
+3. **Configure the gateway** to use Cosmian KMS:
 
 ```yaml
 encryption:
-  password: "fallback-password-used-for-pre-existing-objects"
+  password: "fallback-password-123456"  # Used for pre-existing objects encrypted with password
   key_manager:
     enabled: true
-    provider: cosmian
-    dual_read_window: 1
+    provider: "cosmian"
+    dual_read_window: 1  # Allow reading with previous 1 key version during rotation
     cosmian:
-      endpoint: "127.0.0.1:5696"
+      # RECOMMENDED: JSON/HTTP endpoint (tested and verified in CI)
+      # Full URL format (recommended for clarity):
+      endpoint: "http://localhost:9998/kmip/2_1"
+      # Base URL format (also works - path /kmip/2_1 is auto-appended):
+      # endpoint: "http://localhost:9998"
+      # ADVANCED: Binary KMIP endpoint (requires proper TLS/client certificates)
+      # endpoint: "localhost:5696"  # Requires ca_cert, client_cert, client_key
+      timeout: "10s"
       keys:
-        - id: "wrapping-key-1"
+        - id: "your-key-id-from-cosmian"  # Replace with actual key ID from Cosmian KMS UI
           version: 1
-      ca_cert: "/etc/cosmian/ca.pem"
-      client_cert: "/etc/cosmian/client.crt"
-      client_key: "/etc/cosmian/client.key"
+      # TLS configuration (required for HTTPS or binary KMIP in production)
+      # For HTTP (testing): TLS not required
+      # For HTTPS (production): ca_cert required
+      # For binary KMIP: ca_cert, client_cert, client_key all required
+      # ca_cert: "/path/to/ca.pem"
+      # client_cert: "/path/to/client.crt"
+      # client_key: "/path/to/client.key"
+      # insecure_skip_verify: false  # Only for testing (not recommended)
 ```
 
-Only Cosmian has been validated in CI for v0.5 (see [`docs/KMS_COMPATIBILITY.md`](docs/KMS_COMPATIBILITY.md) for details and a link to Cosmian's install guide). AWS KMS and Vault Transit adapters share the same interface but have not yet been tested end-to-end.
+Or via environment variables:
+
+```bash
+export KEY_MANAGER_ENABLED=true
+export KEY_MANAGER_PROVIDER=cosmian
+export KEY_MANAGER_DUAL_READ_WINDOW=1
+# RECOMMENDED: JSON/HTTP endpoint (tested and verified)
+# Full URL format (recommended):
+export COSMIAN_KMS_ENDPOINT=http://localhost:9998/kmip/2_1
+# Base URL format (also works - path /kmip/2_1 is auto-appended):
+# export COSMIAN_KMS_ENDPOINT=http://localhost:9998
+# ADVANCED: Binary KMIP (requires TLS certificates)
+# export COSMIAN_KMS_ENDPOINT=localhost:5696
+export COSMIAN_KMS_TIMEOUT=10s
+export COSMIAN_KMS_KEYS="your-key-id:1"  # Format: "key1:version1,key2:version2"
+```
+
+#### How It Works
+
+- **Envelope Encryption**: The gateway generates a unique Data Encryption Key (DEK) for each object, then wraps it with the KMS master key
+- **Key Rotation**: The `dual_read_window` setting allows reading objects encrypted with previous key versions during rotation
+- **Fallback Support**: Objects encrypted with the password (before KMS was enabled) can still be decrypted
+- **Health Checks**: KMS health is automatically checked via the `/ready` endpoint
+
+#### Protocol Options
+
+**JSON/HTTP (Recommended - Tested)**:
+- Endpoint format (full URL, recommended): `http://localhost:9998/kmip/2_1` or `https://kms.example.com/kmip/2_1`
+- Endpoint format (base URL, also works): `http://localhost:9998` (path `/kmip/2_1` is automatically appended)
+- No TLS client certificates required for HTTP (testing)
+- TLS certificates required for HTTPS (production: `ca_cert` recommended)
+- Fully tested and verified in CI
+
+**Binary KMIP (Advanced - Requires TLS)**:
+- Endpoint format: `localhost:5696` or `kms.example.com:5696`
+- Requires proper TLS configuration: `ca_cert`, `client_cert`, and `client_key`
+- Not fully tested in CI - use with caution
+- Suitable for production deployments with proper certificate management
+
+#### Production Deployment
+
+For production deployments:
+- **JSON/HTTP with HTTPS**: Use `https://kms.example.com/kmip/2_1` with `ca_cert` for server verification
+- **Binary KMIP**: Requires full TLS setup (`ca_cert`, `client_cert`, `client_key`) for mutual TLS
+- Set `insecure_skip_verify: false` (or omit it)
+- Configure multiple keys for rotation: `[{id: "key-v1", version: 1}, {id: "key-v2", version: 2}]`
+
+See [`docs/KMS_COMPATIBILITY.md`](docs/KMS_COMPATIBILITY.md) for detailed documentation and implementation status. AWS KMS and Vault Transit adapters are planned for v1.0.
 
 ## Kubernetes Deployment
 
