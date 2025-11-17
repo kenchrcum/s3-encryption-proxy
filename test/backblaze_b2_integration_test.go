@@ -46,28 +46,41 @@ func getB2Credentials(t *testing.T) (accessKey, secretKey, bucket string, err er
 	return accessKey, secretKey, bucket, nil
 }
 
-// TestBackblazeB2_BasicEncryption tests basic encryption/decryption with Backblaze B2.
-func TestBackblazeB2_BasicEncryption(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
+// getB2BackendConfig creates a backend config for Backblaze B2.
+func getB2BackendConfig(accessKey, secretKey string) *config.BackendConfig {
+	return &config.BackendConfig{
+		Endpoint:  fmt.Sprintf("https://%s", b2Endpoint),
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+		Provider:  "backblaze",
+		UseSSL:    true,
 	}
+}
 
+// setupB2TestWithCleanup sets up a test with cleanup tracking.
+func setupB2TestWithCleanup(t *testing.T, testName string) (*TestGateway, *ObjectTracker, string, func()) {
 	accessKey, secretKey, bucket, err := getB2Credentials(t)
 	if err != nil {
 		t.Skipf("Skipping Backblaze B2 test: %v", err)
+		return nil, nil, "", nil
 	}
 
-	// Create gateway config for Backblaze B2
+	// Create test prefix for this test run
+	testPrefix := GetTestPrefix(testName)
+
+	// Create S3 client for cleanup
+	backendCfg := getB2BackendConfig(accessKey, secretKey)
+	s3Client, err := CreateS3ClientForCleanup(backendCfg)
+	require.NoError(t, err, "Failed to create S3 client for cleanup")
+
+	// Create object tracker
+	tracker := NewObjectTracker(bucket, testPrefix, "backblaze", s3Client)
+
+	// Create gateway config
 	cfg := &config.Config{
 		ListenAddr: ":0",
 		LogLevel:   "error",
-		Backend: config.BackendConfig{
-			Endpoint:  fmt.Sprintf("https://%s", b2Endpoint),
-			AccessKey: accessKey,
-			SecretKey: secretKey,
-			Provider:  "backblaze",
-			UseSSL:    true,
-		},
+		Backend:    *backendCfg,
 		Encryption: config.EncryptionConfig{
 			Password:           "test-password-123456",
 			PreferredAlgorithm: "AES256-GCM",
@@ -75,10 +88,27 @@ func TestBackblazeB2_BasicEncryption(t *testing.T) {
 	}
 
 	gateway := StartGateway(t, cfg)
-	defer gateway.Close()
+
+	cleanup := func() {
+		ctx := context.Background()
+		tracker.Cleanup(ctx, t)
+		gateway.Close()
+	}
+
+	return gateway, tracker, bucket, cleanup
+}
+
+// TestBackblazeB2_BasicEncryption tests basic encryption/decryption with Backblaze B2.
+func TestBackblazeB2_BasicEncryption(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	gateway, tracker, bucket, cleanup := setupB2TestWithCleanup(t, "basic-encryption")
+	defer cleanup()
 
 	// Test data
-	testKey := fmt.Sprintf("test-basic-%d", time.Now().UnixNano())
+	testKey := fmt.Sprintf("%stest-basic", tracker.Prefix())
 	testData := []byte("Hello from Backblaze B2 integration test!")
 
 	// PUT encrypted object
@@ -92,6 +122,9 @@ func TestBackblazeB2_BasicEncryption(t *testing.T) {
 	require.Equal(t, http.StatusOK, putResp.StatusCode, "PUT should succeed")
 	putResp.Body.Close()
 
+	// Track object for cleanup
+	tracker.Track(testKey)
+
 	// GET and verify decryption
 	getURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, testKey)
 	getResp, err := http.Get(getURL)
@@ -102,15 +135,6 @@ func TestBackblazeB2_BasicEncryption(t *testing.T) {
 	gotData, err := io.ReadAll(getResp.Body)
 	require.NoError(t, err)
 	require.Equal(t, testData, gotData, "Decrypted data should match original")
-
-	// Cleanup: Delete object
-	deleteURL := fmt.Sprintf("http://%s/%s/%s", gateway.Addr, bucket, testKey)
-	deleteReq, err := http.NewRequest("DELETE", deleteURL, nil)
-	require.NoError(t, err)
-	deleteResp, err := http.DefaultClient.Do(deleteReq)
-	if err == nil {
-		deleteResp.Body.Close()
-	}
 }
 
 // TestBackblazeB2_LargeFile tests encryption/decryption with a larger file.
@@ -476,5 +500,30 @@ func TestBackblazeB2_ConcurrentOperations(t *testing.T) {
 	}
 
 	require.Empty(t, errorList, "Concurrent operations should not produce errors")
+}
+
+// TestBackblazeB2_ZZZ_FinalCleanup runs last to ensure all test objects are cleaned up.
+// This test lists all objects with test prefixes and deletes them.
+func TestBackblazeB2_ZZZ_FinalCleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping cleanup test in short mode")
+	}
+
+	accessKey, secretKey, bucket, err := getB2Credentials(t)
+	if err != nil {
+		t.Skipf("Skipping Backblaze B2 cleanup test: %v", err)
+		return
+	}
+
+	// Create S3 client for cleanup
+	backendCfg := getB2BackendConfig(accessKey, secretKey)
+	s3Client, err := CreateS3ClientForCleanup(backendCfg)
+	require.NoError(t, err, "Failed to create S3 client for cleanup")
+
+	// Clean up all objects with test prefix
+	// Use a broad prefix to catch any test objects
+	tracker := NewObjectTracker(bucket, "test-", "backblaze", s3Client)
+	ctx := context.Background()
+	tracker.CleanupAllObjects(ctx, t)
 }
 

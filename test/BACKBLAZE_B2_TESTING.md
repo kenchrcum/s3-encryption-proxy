@@ -112,6 +112,41 @@ go test -v -tags=integration -run TestBackblazeB2_MetadataHandling ./test
 go test -v -tags=integration -run TestBackblazeB2_ConcurrentOperations ./test
 ```
 
+**Multipart upload test:**
+```bash
+go test -v -tags=integration -run TestBackblazeB2_MultipartUpload ./test
+```
+
+**Range request test:**
+```bash
+go test -v -tags=integration -run TestBackblazeB2_RangeRequest ./test
+```
+
+**Batch delete test:**
+```bash
+go test -v -tags=integration -run TestBackblazeB2_BatchDelete ./test
+```
+
+**List objects test:**
+```bash
+go test -v -tags=integration -run TestBackblazeB2_ListObjects ./test
+```
+
+**Extended KMS integration test:**
+```bash
+go test -v -tags=integration -run TestBackblazeB2_WithCosmianKMS_Extended ./test
+```
+
+**Load test:**
+```bash
+go test -v -tags=integration -run TestBackblazeB2_LoadTest ./test
+```
+
+**Final cleanup test (runs last):**
+```bash
+go test -v -tags=integration -run TestBackblazeB2_ZZZ_FinalCleanup ./test
+```
+
 ## Test Descriptions
 
 ### TestBackblazeB2_BasicEncryption
@@ -143,6 +178,48 @@ Tests concurrent PUT/GET operations. Verifies:
 - Thread safety
 - No race conditions
 - Correct behavior under load
+
+### TestBackblazeB2_MultipartUpload
+Tests multipart upload functionality with large files (5MB). Verifies:
+- Large file handling
+- Multipart upload process
+- Data integrity with large objects
+
+### TestBackblazeB2_RangeRequest
+Tests HTTP range request functionality. Verifies:
+- Partial content retrieval
+- Range header handling
+- Data integrity with range requests
+
+### TestBackblazeB2_BatchDelete
+Tests batch delete operation. Verifies:
+- Multiple object deletion in single request
+- XML batch delete format
+- Verification of deleted objects
+
+### TestBackblazeB2_ListObjects
+Tests list objects operation. Verifies:
+- Object listing with prefix
+- XML response parsing
+- Correct object enumeration
+
+### TestBackblazeB2_WithCosmianKMS_Extended
+Extended KMS integration test with multiple objects. Verifies:
+- KMS integration with multiple objects
+- Comprehensive cleanup with KMS
+- End-to-end encryption with external KMS
+
+### TestBackblazeB2_LoadTest
+Load test with concurrent workers. Verifies:
+- Performance under load
+- Concurrent request handling
+- Throughput and failure rate metrics
+
+### TestBackblazeB2_ZZZ_FinalCleanup
+Final cleanup test that runs last. Verifies:
+- All test objects are deleted
+- No orphaned objects remain
+- Bucket is clean after test run
 
 ## Endpoint Configuration
 
@@ -212,6 +289,30 @@ If you see "cipher: message authentication failed" errors:
 
 5. **Clean up**: The tests attempt to clean up created objects, but verify manually if needed.
 
+## Cleanup and Object Management
+
+The tests use a comprehensive cleanup system that:
+- **Tracks all objects** created during each test run
+- **Automatically deletes** tracked objects after tests complete
+- **Final cleanup test** (`TestBackblazeB2_ZZZ_FinalCleanup`) runs last to ensure no objects remain
+
+### Cleanup Configuration
+
+Cleanup is **enabled by default** for Backblaze B2 (deletion is free). The cleanup system:
+- Uses unique test prefixes to isolate test objects
+- Tracks objects per test for individual cleanup
+- Provides a final cleanup that lists and deletes all test objects
+
+### Provider-Specific Cleanup
+
+The cleanup system is provider-aware:
+- **Backblaze B2**: Cleanup enabled (free deletion)
+- **Wasabi**: Cleanup disabled (timed deletion costs apply)
+- **MinIO**: Cleanup enabled (local, no cost)
+- **AWS**: Cleanup enabled (free deletion)
+
+To disable cleanup for a provider, modify `ProviderCleanupConfigs` in `test/cleanup_helper.go`.
+
 ## Cost Considerations
 
 Backblaze B2 charges for:
@@ -219,9 +320,15 @@ Backblaze B2 charges for:
 - Downloads: $0.01/GB (first 1GB/day free)
 - Uploads: Free
 
-The integration tests create and delete small objects, so costs should be minimal. However, be aware of:
-- Storage costs if tests fail and objects aren't cleaned up
+The integration tests create and delete small objects, so costs should be minimal. The cleanup system ensures:
+- Objects are automatically deleted after tests
+- No orphaned objects remain in the bucket
+- Final cleanup test verifies bucket is clean
+
+However, be aware of:
+- Storage costs if tests fail before cleanup runs
 - Download costs if running tests frequently with large files
+- Network costs for data transfer
 
 ## See Also
 
