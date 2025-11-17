@@ -21,7 +21,7 @@ test:
 # Run integration tests (requires Docker)
 test-integration:
 	@echo "Running integration tests..."
-	@go test -v ./test/... -run TestS3Gateway
+	@go test -v -tags=integration ./test/... -run TestS3Gateway
 
 # Run load tests for range operations
 test-load-range:
@@ -67,9 +67,11 @@ test-comprehensive:
 	@echo "Running comprehensive test suite..."
 	@echo "1. Running code tests..."
 	@go test ./internal/* -v
-	@echo "2. Running integration tests..."
-	@go test ./test -v
-	@echo "3. Running load tests..."
+	@echo "2. Running integration tests (standard integration tests)..."
+	@go test -v ./test
+	@echo "3. Running integration tests with build tags (KMS and Backblaze B2 tests)..."
+	@go test -v -tags=integration ./test
+	@echo "4. Running load tests..."
 	@make test-load-minio
 
 # Run tests with coverage
