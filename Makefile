@@ -11,7 +11,7 @@ IMAGE_TAG ?= $(VERSION)
 build:
 	@echo "Building $(BINARY_NAME)..."
 	@CGO_ENABLED=0 go build -ldflags="-w -s -X main.version=$(VERSION) -X main.commit=$(COMMIT)" \
-		-o bin/$(BINARY_NAME) ./cmd/server
+		-o bin/$(BINARY_NAME)-$(VERSION) ./cmd/server
 
 # Run tests
 test:
