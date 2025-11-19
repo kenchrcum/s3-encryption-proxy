@@ -1,0 +1,141 @@
+package config
+
+import (
+	"os"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestRotationPolicyConfig_Defaults(t *testing.T) {
+	// Set required backend credentials
+	os.Setenv("BACKEND_ACCESS_KEY", "test-key")
+	os.Setenv("BACKEND_SECRET_KEY", "test-secret")
+	os.Setenv("ENCRYPTION_PASSWORD", "test-password-123456")
+	defer func() {
+		os.Unsetenv("BACKEND_ACCESS_KEY")
+		os.Unsetenv("BACKEND_SECRET_KEY")
+		os.Unsetenv("ENCRYPTION_PASSWORD")
+	}()
+
+	// Defaults should be set in LoadConfig
+	cfg, err := LoadConfig("")
+	require.NoError(t, err)
+	assert.False(t, cfg.Encryption.KeyManager.RotationPolicy.Enabled)
+	assert.Equal(t, time.Duration(0), cfg.Encryption.KeyManager.RotationPolicy.GraceWindow)
+}
+
+func TestRotationPolicyConfig_FromEnv(t *testing.T) {
+	// Set required backend credentials
+	os.Setenv("BACKEND_ACCESS_KEY", "test-key")
+	os.Setenv("BACKEND_SECRET_KEY", "test-secret")
+	os.Setenv("ENCRYPTION_PASSWORD", "test-password-123456")
+	// Set rotation policy environment variables
+	os.Setenv("KEY_MANAGER_ROTATION_POLICY_ENABLED", "true")
+	os.Setenv("KEY_MANAGER_ROTATION_GRACE_WINDOW", "168h")
+	defer func() {
+		os.Unsetenv("BACKEND_ACCESS_KEY")
+		os.Unsetenv("BACKEND_SECRET_KEY")
+		os.Unsetenv("ENCRYPTION_PASSWORD")
+		os.Unsetenv("KEY_MANAGER_ROTATION_POLICY_ENABLED")
+		os.Unsetenv("KEY_MANAGER_ROTATION_GRACE_WINDOW")
+	}()
+
+	config, err := LoadConfig("")
+	require.NoError(t, err)
+	assert.True(t, config.Encryption.KeyManager.RotationPolicy.Enabled)
+	assert.Equal(t, 168*time.Hour, config.Encryption.KeyManager.RotationPolicy.GraceWindow)
+}
+
+func TestRotationPolicyConfig_FromYAML(t *testing.T) {
+	yamlContent := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password-123456"
+  key_manager:
+    enabled: true
+    provider: "cosmian"
+    dual_read_window: 2
+    rotation_policy:
+      enabled: true
+      grace_window: 72h
+    cosmian:
+      endpoint: "http://localhost:9998/kmip/2_1"
+      keys:
+        - id: "key-1"
+          version: 1
+`
+
+	tmpFile := createTempConfigFile(t, yamlContent)
+	defer os.Remove(tmpFile)
+
+	config, err := LoadConfig(tmpFile)
+	require.NoError(t, err)
+	assert.True(t, config.Encryption.KeyManager.RotationPolicy.Enabled)
+	assert.Equal(t, 72*time.Hour, config.Encryption.KeyManager.RotationPolicy.GraceWindow)
+}
+
+func TestRotationPolicyConfig_InvalidGraceWindow(t *testing.T) {
+	os.Setenv("BACKEND_ACCESS_KEY", "test-key")
+	os.Setenv("BACKEND_SECRET_KEY", "test-secret")
+	os.Setenv("ENCRYPTION_PASSWORD", "test-password-123456")
+	os.Setenv("KEY_MANAGER_ROTATION_GRACE_WINDOW", "invalid")
+	defer func() {
+		os.Unsetenv("BACKEND_ACCESS_KEY")
+		os.Unsetenv("BACKEND_SECRET_KEY")
+		os.Unsetenv("ENCRYPTION_PASSWORD")
+		os.Unsetenv("KEY_MANAGER_ROTATION_GRACE_WINDOW")
+	}()
+
+	config, err := LoadConfig("")
+	require.NoError(t, err)
+	// Invalid duration should be ignored, default to 0
+	assert.Equal(t, time.Duration(0), config.Encryption.KeyManager.RotationPolicy.GraceWindow)
+}
+
+func TestRotationPolicyConfig_EnvOverridesYAML(t *testing.T) {
+	yamlContent := `
+backend:
+  access_key: "test-key"
+  secret_key: "test-secret"
+encryption:
+  password: "test-password-123456"
+  key_manager:
+    rotation_policy:
+      enabled: false
+      grace_window: 24h
+`
+
+	tmpFile := createTempConfigFile(t, yamlContent)
+	defer os.Remove(tmpFile)
+
+	os.Setenv("KEY_MANAGER_ROTATION_POLICY_ENABLED", "true")
+	os.Setenv("KEY_MANAGER_ROTATION_GRACE_WINDOW", "168h")
+	defer func() {
+		os.Unsetenv("KEY_MANAGER_ROTATION_POLICY_ENABLED")
+		os.Unsetenv("KEY_MANAGER_ROTATION_GRACE_WINDOW")
+	}()
+
+	config, err := LoadConfig(tmpFile)
+	require.NoError(t, err)
+	// Environment should override YAML
+	assert.True(t, config.Encryption.KeyManager.RotationPolicy.Enabled)
+	assert.Equal(t, 168*time.Hour, config.Encryption.KeyManager.RotationPolicy.GraceWindow)
+}
+
+// Helper function to create temporary config file
+func createTempConfigFile(t *testing.T, content string) string {
+	tmpFile, err := os.CreateTemp("", "test-config-*.yaml")
+	require.NoError(t, err)
+
+	_, err = tmpFile.WriteString(content)
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	return tmpFile.Name()
+}
+

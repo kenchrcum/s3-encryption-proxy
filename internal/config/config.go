@@ -70,13 +70,25 @@ type EncryptionConfig struct {
 //
 // See docs/KMS_COMPATIBILITY.md for implementation status.
 type KeyManagerConfig struct {
-	Enabled        bool          `yaml:"enabled" env:"KEY_MANAGER_ENABLED"`
-	Provider       string        `yaml:"provider" env:"KEY_MANAGER_PROVIDER"`
-	DualReadWindow int           `yaml:"dual_read_window" env:"KEY_MANAGER_DUAL_READ_WINDOW"`
-	Cosmian        CosmianConfig `yaml:"cosmian"`
+	Enabled        bool              `yaml:"enabled" env:"KEY_MANAGER_ENABLED"`
+	Provider       string            `yaml:"provider" env:"KEY_MANAGER_PROVIDER"`
+	DualReadWindow int               `yaml:"dual_read_window" env:"KEY_MANAGER_DUAL_READ_WINDOW"`
+	RotationPolicy RotationPolicyConfig `yaml:"rotation_policy"`
+	Cosmian        CosmianConfig     `yaml:"cosmian"`
 	// TODO(v1.0): Add AWS and Vault config fields when adapters are implemented
 	// AWS        AWSKMSConfig  `yaml:"aws"`
 	// Vault      VaultConfig   `yaml:"vault"`
+}
+
+// RotationPolicyConfig holds key rotation policy configuration.
+type RotationPolicyConfig struct {
+	// Enabled enables automatic rotation policy tracking and audit events.
+	// Note: Actual rotation must be performed manually by updating the key configuration.
+	Enabled bool `yaml:"enabled" env:"KEY_MANAGER_ROTATION_POLICY_ENABLED"`
+	// GraceWindow is the duration after rotation during which both old and new keys are accepted.
+	// This should match or exceed DualReadWindow in practice.
+	// Default: 0 (disabled, use DualReadWindow instead)
+	GraceWindow time.Duration `yaml:"grace_window" env:"KEY_MANAGER_ROTATION_GRACE_WINDOW"`
 }
 
 // CosmianConfig captures settings for the Cosmian KMIP integration.
@@ -171,6 +183,10 @@ func LoadConfig(path string) (*Config, error) {
 			KeyManager: KeyManagerConfig{
 				Provider:       "cosmian",
 				DualReadWindow: 1,
+				RotationPolicy: RotationPolicyConfig{
+					Enabled:     false,
+					GraceWindow: 0, // Use DualReadWindow by default
+				},
 			},
 		},
 		Backend: BackendConfig{
@@ -303,6 +319,14 @@ func loadFromEnv(config *Config) {
 	if v := os.Getenv("KEY_MANAGER_DUAL_READ_WINDOW"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			config.Encryption.KeyManager.DualReadWindow = n
+		}
+	}
+	if v := os.Getenv("KEY_MANAGER_ROTATION_POLICY_ENABLED"); v != "" {
+		config.Encryption.KeyManager.RotationPolicy.Enabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("KEY_MANAGER_ROTATION_GRACE_WINDOW"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			config.Encryption.KeyManager.RotationPolicy.GraceWindow = d
 		}
 	}
 	if v := os.Getenv("COSMIAN_KMS_ENDPOINT"); v != "" {

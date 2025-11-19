@@ -735,14 +735,41 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	if algorithm == "" {
 		algorithm = crypto.AlgorithmAES256GCM
 	}
-	keyVersion := 0 // Default if not available
+	
+	// Extract actual key version used for decryption from metadata
+	keyVersionUsed := 0
+	if kvStr, ok := metadata[crypto.MetaKeyVersion]; ok && kvStr != "" {
+		if kv, err := strconv.Atoi(kvStr); err == nil {
+			keyVersionUsed = kv
+		}
+	}
+	
+	// Get active key version and check for rotated read
+	activeKeyVersion := 0
 	if h.keyManager != nil {
-		keyVersion = h.currentKeyVersion(r.Context())
+		activeKeyVersion = h.currentKeyVersion(r.Context())
+		// Track rotated read if key version used differs from active version
+		if keyVersionUsed > 0 && activeKeyVersion > 0 && keyVersionUsed != activeKeyVersion {
+			h.metrics.RecordRotatedRead(keyVersionUsed, activeKeyVersion)
+		}
 	}
 
-	// Audit logging
+	// Use keyVersionUsed for audit logging (actual version used, not active)
+	keyVersion := keyVersionUsed
+	if keyVersion == 0 && h.keyManager != nil {
+		// Fallback to active version if metadata doesn't have version
+		keyVersion = activeKeyVersion
+	}
+
+	// Audit logging with metadata indicating rotated read if applicable
+	auditMetadata := make(map[string]interface{})
+	if keyVersionUsed > 0 && activeKeyVersion > 0 && keyVersionUsed != activeKeyVersion {
+		auditMetadata["rotated_read"] = true
+		auditMetadata["key_version_used"] = keyVersionUsed
+		auditMetadata["active_key_version"] = activeKeyVersion
+	}
 	if h.auditLogger != nil {
-		h.auditLogger.LogDecrypt(bucket, key, algorithm, keyVersion, true, nil, decryptDuration, nil)
+		h.auditLogger.LogDecrypt(bucket, key, algorithm, keyVersion, true, nil, decryptDuration, auditMetadata)
 	}
 
 	// Store in cache if enabled and no range/version request

@@ -3,12 +3,13 @@ package metrics
 import (
 	"net/http"
 	"runtime"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-    "strings"
 )
 
 var (
@@ -28,6 +29,7 @@ type Metrics struct {
 	encryptionDuration   *prometheus.HistogramVec
 	encryptionErrors     *prometheus.CounterVec
 	encryptionBytes      *prometheus.CounterVec
+	rotatedReads         *prometheus.CounterVec
 	bufferPoolHits       *prometheus.CounterVec
 	bufferPoolMisses     *prometheus.CounterVec
 	activeConnections    prometheus.Gauge
@@ -124,6 +126,13 @@ func newMetricsWithRegistry(reg prometheus.Registerer) *Metrics {
 			},
 			[]string{"operation"},
 		),
+		rotatedReads: factory.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "kms_rotated_reads_total",
+				Help: "Total number of decryption operations using rotated (non-active) key versions",
+			},
+			[]string{"key_version", "active_version"},
+		),
 		bufferPoolHits: factory.NewCounterVec(
 			prometheus.CounterOpts{
 				Name: "buffer_pool_hits_total",
@@ -214,6 +223,14 @@ func (m *Metrics) RecordEncryptionOperation(operation string, duration time.Dura
 // RecordEncryptionError records an encryption operation error.
 func (m *Metrics) RecordEncryptionError(operation, errorType string) {
 	m.encryptionErrors.WithLabelValues(operation, errorType).Inc()
+}
+
+// RecordRotatedRead records a decryption operation using a rotated (non-active) key version.
+func (m *Metrics) RecordRotatedRead(keyVersion, activeVersion int) {
+	m.rotatedReads.WithLabelValues(
+		strconv.Itoa(keyVersion),
+		strconv.Itoa(activeVersion),
+	).Inc()
 }
 
 // RecordBufferPoolHit records a buffer pool hit.

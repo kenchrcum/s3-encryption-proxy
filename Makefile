@@ -54,6 +54,12 @@ test-load-minio:
 	@echo ""
 	@cd test && ./run_load_tests.sh --manage-minio
 
+# Run key rotation tests
+test-rotation:
+	@echo "Running key rotation tests..."
+	@echo "This will start MinIO, KMS, the S3 Encryption Gateway, run rotation tests, and clean up automatically."
+	@bash test/rotation_test.sh
+
 # Build load test binary
 build-loadtest:
 	@echo "Building load test binary..."
@@ -71,7 +77,9 @@ test-comprehensive:
 	@go test -v ./test
 	@echo "3. Running integration tests with build tags (KMS and Backblaze B2 tests)..."
 	@go test -v -tags=integration ./test
-	@echo "4. Running load tests..."
+	@echo "4. Running key rotation tests..."
+	@make test-rotation
+	@echo "5. Running load tests..."
 	@make test-load-minio
 
 # Run tests with coverage
@@ -146,6 +154,7 @@ help:
 	@echo "  test-load-baseline - Run load tests and update baselines"
 	@echo "  test-load-prometheus-Run load tests with Prometheus metrics"
 	@echo "  test-load-minio    - Run load tests with MinIO environment management (auto cleanup)"
+	@echo "  test-rotation      - Run key rotation tests"
 	@echo "  build-loadtest     - Build load test binary"
 	@echo "  test-all           - Run all tests including integration"
 	@echo "  test-comprehensive - Run comprehensive test suite (code, integration, and load tests)"

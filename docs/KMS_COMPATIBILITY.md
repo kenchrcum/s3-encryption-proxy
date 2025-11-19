@@ -72,6 +72,146 @@ The envelope returned by `WrapKey` is persisted alongside object metadata:
 
 At decrypt time the engine builds the same envelope and calls `UnwrapKey`. This allows dual-read windows and phased rotations—the key manager implementation decides how many historical keys to keep and how to interpret the metadata.
 
+## Dual-Read Window and Key Rotation
+
+The gateway supports **dual-read windows** for seamless key rotation. This allows objects encrypted with older key versions to be decrypted even after rotation, without requiring immediate re-encryption.
+
+### How Dual-Read Works
+
+When decrypting an object, the gateway:
+
+1. **Reads the key version** from object metadata (`x-amz-meta-encryption-key-version`)
+2. **Attempts decryption** with the key version specified in metadata
+3. **Falls back to previous versions** if the primary key fails (up to `dual_read_window` versions)
+4. **Tracks rotated reads** via metrics and audit logs
+
+### Configuration
+
+Configure the dual-read window in your gateway configuration:
+
+```yaml
+encryption:
+  key_manager:
+    enabled: true
+    provider: "cosmian"
+    dual_read_window: 2  # Allow reading with previous 2 key versions
+    rotation_policy:
+      enabled: true
+      grace_window: 168h  # 7 days grace period (optional)
+    cosmian:
+      keys:
+        - id: "key-id-2"
+          version: 2  # Active key
+        - id: "key-id-1"
+          version: 1  # Previous key (for dual-read)
+```
+
+**Key Settings:**
+- `dual_read_window`: Number of previous key versions to attempt during decryption (default: 1)
+- `rotation_policy.enabled`: Enable rotation policy tracking and audit events
+- `rotation_policy.grace_window`: Optional grace period after rotation (default: 0, uses `dual_read_window`)
+
+### Rotation Policy
+
+The rotation policy provides:
+
+1. **Metrics**: Track rotated reads via `kms_rotated_reads_total` metric
+   - Labels: `key_version` (version used), `active_version` (current active version)
+2. **Audit Logging**: Decrypt events include metadata when rotated keys are used
+   - `rotated_read: true`
+   - `key_version_used`: The version used for decryption
+   - `active_key_version`: The current active version
+3. **Monitoring**: Monitor key rotation status and usage patterns
+
+### Rotation Workflow
+
+**Step 1: Prepare New Key**
+- Create a new wrapping key in your KMS (e.g., Cosmian KMS UI)
+- Note the new key ID and assign it version number (e.g., version 2)
+
+**Step 2: Update Configuration**
+- Add the new key to the `keys` list as the first entry (primary/active)
+- Keep previous keys in the list for dual-read support
+- Update `dual_read_window` if needed (should be >= number of old keys to support)
+
+**Step 3: Restart Gateway**
+- Restart the gateway to load the new configuration
+- New objects will be encrypted with the new key version
+- Old objects remain accessible via dual-read window
+
+**Step 4: Monitor Rotated Reads**
+- Check metrics: `kms_rotated_reads_total{key_version="1",active_version="2"}`
+- Review audit logs for `rotated_read: true` events
+- Monitor until all objects are accessed and can be re-encrypted (optional)
+
+**Step 5: Optional Cleanup**
+- After grace period, remove old keys from configuration
+- Old objects encrypted with removed keys will no longer be decryptable
+- Ensure all critical objects have been accessed/re-encrypted before cleanup
+
+### Example: Rotation Scenario
+
+```yaml
+# Before rotation
+encryption:
+  key_manager:
+    dual_read_window: 1
+    cosmian:
+      keys:
+        - id: "key-v1"
+          version: 1
+
+# After rotation (new key v2 is active, v1 still supported)
+encryption:
+  key_manager:
+    dual_read_window: 2
+    rotation_policy:
+      enabled: true
+      grace_window: 168h  # 7 days
+    cosmian:
+      keys:
+        - id: "key-v2"      # Active key
+          version: 2
+        - id: "key-v1"      # Previous key (dual-read)
+          version: 1
+```
+
+**Behavior:**
+- New objects → Encrypted with key v2
+- Old objects (v1) → Decrypted using key v1 (via dual-read)
+- Metrics → `kms_rotated_reads_total{key_version="1",active_version="2"}` incremented
+- Audit logs → Include `rotated_read: true` for v1 objects
+
+### Monitoring Rotated Reads
+
+**Prometheus Query:**
+```promql
+# Count rotated reads by key version
+sum(rate(kms_rotated_reads_total[5m])) by (key_version, active_version)
+
+# Alert when rotated reads exceed threshold
+rate(kms_rotated_reads_total[1h]) > 100
+```
+
+**Audit Log Example:**
+```json
+{
+  "timestamp": "2024-01-15T10:30:00Z",
+  "event_type": "decrypt",
+  "operation": "decrypt",
+  "bucket": "my-bucket",
+  "key": "object-v1.dat",
+  "algorithm": "AES256-GCM",
+  "key_version": 1,
+  "success": true,
+  "metadata": {
+    "rotated_read": true,
+    "key_version_used": 1,
+    "active_key_version": 2
+  }
+}
+```
+
 ### Cosmian KMIP Quick Start
 
 Cosmian publishes an all-in-one Docker image that exposes the HTTPS admin UI on port `9998` and KMIP endpoints on ports `5696` (binary) and `9998` (JSON/HTTP). The quickest way to start a local instance is:
@@ -349,17 +489,26 @@ export KEY_MANAGER_ENABLED=true
 export ENCRYPTION_PASSWORD="your-initial-password"
 ```
 
-## Key Rotation Workflow
+## Key Rotation Workflow (Updated)
 
-When using KMS mode, the rotation workflow is:
+When using KMS mode with external KMS (e.g., Cosmian KMIP), the rotation workflow is:
 
 1. **Current State**: All objects encrypted with key version 1
-2. **Rotate Key**: Call `RotateKey("new-password", false)` 
-   - Creates key version 2
-   - Version 1 remains active for decryption
-3. **New Objects**: Encrypted with version 2
-4. **Old Objects**: Still decryptable with version 1
-5. **Optional Deactivation**: After migration, call `RotateKey("next-password", true)` to deactivate old keys
+2. **Create New Key**: Create a new wrapping key in your KMS (e.g., via Cosmian KMS UI)
+   - Assign it version 2
+   - Note the key ID
+3. **Update Configuration**: Add new key to `encryption.key_manager.cosmian.keys` as first entry
+   - Keep old key(s) in the list for dual-read support
+   - Set `dual_read_window` appropriately
+4. **Restart Gateway**: Restart to load new configuration
+   - New objects → Encrypted with version 2
+   - Old objects → Still decryptable with version 1 (via dual-read)
+5. **Monitor**: Track rotated reads via metrics and audit logs
+6. **Optional Cleanup**: After grace period, remove old keys from configuration
+   - Ensure all critical objects have been accessed/re-encrypted
+   - Objects encrypted with removed keys will no longer be decryptable
+
+See the [Dual-Read Window and Key Rotation](#dual-read-window-and-key-rotation) section above for detailed configuration and monitoring guidance.
 
 ## Best Practices
 
