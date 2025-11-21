@@ -26,7 +26,7 @@ func TestHandler_getS3Client_DefaultMode(t *testing.T) {
 		},
 	}
 
-	handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg)
+	handler := NewHandlerWithFeatures(mockClient, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
 	
 	req := &http.Request{
 		URL: &url.URL{Path: "/test-bucket/test-key"},
@@ -63,7 +63,7 @@ func TestHandler_getS3Client_UseClientCredentials_WithQueryParams(t *testing.T) 
 	}
 
 	// Create handler without pre-configured client (useClientCredentials mode)
-	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg)
+	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
 	
 	// Request with query parameters
 	req := &http.Request{
@@ -103,7 +103,7 @@ func TestHandler_getS3Client_UseClientCredentials_MissingCredentials(t *testing.
 		},
 	}
 
-	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg)
+	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
 	
 	// Request without credentials
 	req := &http.Request{
@@ -142,7 +142,7 @@ func TestHandler_getS3Client_UseClientCredentials_IncompleteCredentials(t *testi
 		},
 	}
 
-	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg)
+	handler := NewHandlerWithFeatures(nil, mockEngine, logger, getTestMetrics(), nil, nil, nil, cfg, nil)
 	
 	// Request with only access key (from Authorization header)
 	req := &http.Request{

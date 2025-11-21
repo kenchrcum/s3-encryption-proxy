@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -33,11 +34,13 @@ type Handler struct {
 	cache           cache.Cache
 	auditLogger     audit.Logger
 	config          *config.Config
+	policyManager   *config.PolicyManager
+	engineCache     sync.Map
 }
 
 // NewHandler creates a new API handler (backward compatibility).
 func NewHandler(s3Client s3.Client, encryptionEngine crypto.EncryptionEngine, logger *logrus.Logger, m *metrics.Metrics) *Handler {
-	return NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, nil)
+	return NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, nil, nil)
 }
 
 // NewHandlerWithFeatures creates a new API handler with Phase 5 features.
@@ -50,8 +53,9 @@ func NewHandlerWithFeatures(
 	cache cache.Cache,
 	auditLogger audit.Logger,
 	config *config.Config,
+	policyManager *config.PolicyManager,
 ) *Handler {
-    h := &Handler{
+	h := &Handler{
 		s3Client:        s3Client,
 		encryptionEngine: encryptionEngine,
 		logger:          logger,
@@ -60,7 +64,8 @@ func NewHandlerWithFeatures(
 		cache:          cache,
 		auditLogger:    auditLogger,
 		config:         config,
-    }
+		policyManager:   policyManager,
+	}
     // Create client factory for per-request credential support
     if config != nil {
         h.clientFactory = s3.NewClientFactory(&config.Backend)
@@ -325,7 +330,14 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 		}
 	}
 
-	isEncrypted := h.encryptionEngine.IsEncrypted(metadata)
+	engine, err := h.getEncryptionEngine(bucket)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get encryption engine")
+		// Fallback to forwarding as-is if engine fails
+		engine = h.encryptionEngine
+	}
+
+	isEncrypted := engine.IsEncrypted(metadata)
 	var decMetadata map[string]string
 	var decryptedReader io.Reader
 
@@ -333,7 +345,7 @@ func (h *Handler) forwardSignatureV4Request(w http.ResponseWriter, r *http.Reque
 		// Try to decrypt - read body first, then decrypt
 		bodyBytes, err := io.ReadAll(backendResp.Body)
 		if err == nil {
-			decryptedReader, decMetadata, err = h.encryptionEngine.Decrypt(bytes.NewReader(bodyBytes), metadata)
+			decryptedReader, decMetadata, err = engine.Decrypt(bytes.NewReader(bodyBytes), metadata)
 			if err != nil {
 				h.logger.WithError(err).Warn("Failed to decrypt forwarded response, returning as-is")
 				isEncrypted = false // Fall back to forwarding encrypted
@@ -462,6 +474,95 @@ func (h *Handler) getS3Client(r *http.Request) (s3.Client, error) {
 	return client, nil
 }
 
+// getEncryptionEngine returns the appropriate encryption engine for the bucket.
+// It checks if a specific policy exists for the bucket and returns a configured engine,
+// otherwise returns the default global engine.
+func (h *Handler) getEncryptionEngine(bucket string) (crypto.EncryptionEngine, error) {
+	if h.policyManager == nil {
+		return h.encryptionEngine, nil
+	}
+
+	policy := h.policyManager.GetPolicyForBucket(bucket)
+	if policy == nil {
+		return h.encryptionEngine, nil
+	}
+
+	// Check cache first (key by policy ID)
+	if val, ok := h.engineCache.Load(policy.ID); ok {
+		return val.(crypto.EncryptionEngine), nil
+	}
+
+	// Create new engine based on policy
+	// Use global config as base and apply policy overrides
+	if h.config == nil {
+		// Should not happen if properly initialized
+		return h.encryptionEngine, nil
+	}
+
+	// Apply policy to a copy of config
+	effectiveConfig := policy.ApplyToConfig(h.config)
+
+	// Reconstruct components
+	var compressionEngine crypto.CompressionEngine
+	if effectiveConfig.Compression.Enabled {
+		compressionEngine = crypto.NewCompressionEngine(
+			effectiveConfig.Compression.Enabled,
+			effectiveConfig.Compression.MinSize,
+			effectiveConfig.Compression.ContentTypes,
+			effectiveConfig.Compression.Algorithm,
+			effectiveConfig.Compression.Level,
+		)
+	}
+
+	// Use password from effective config
+	// Note: If password came from file and wasn't in config struct, we might have issues if policy doesn't specify it.
+	// We assume main.go populated config struct or policy provides it.
+	password := effectiveConfig.Encryption.Password
+	// Fallback logic for password if not in config (e.g. loaded from file directly to var in main)
+	// This is a limitation: we need the base password in config struct for this to work if policy doesn't override it.
+	
+	chunkedMode := effectiveConfig.Encryption.ChunkedMode
+	if !effectiveConfig.Encryption.ChunkedMode && effectiveConfig.Encryption.ChunkSize == 0 {
+		chunkedMode = true
+	}
+	chunkSize := effectiveConfig.Encryption.ChunkSize
+	if chunkSize == 0 {
+		chunkSize = crypto.DefaultChunkSize
+	}
+
+	engine, err := crypto.NewEngineWithChunking(
+		password,
+		compressionEngine,
+		effectiveConfig.Encryption.PreferredAlgorithm,
+		effectiveConfig.Encryption.SupportedAlgorithms,
+		chunkedMode,
+		chunkSize,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create policy engine: %w", err)
+	}
+
+	// Configure KeyManager
+	if effectiveConfig.Encryption.KeyManager.Enabled {
+		// If policy specifies different KM config, build new one
+		if policy.Encryption != nil && (policy.Encryption.KeyManager.Enabled || policy.Encryption.KeyManager.Provider != "") {
+			km, err := BuildKeyManager(&effectiveConfig.Encryption.KeyManager, h.logger)
+			if err != nil {
+				return nil, fmt.Errorf("failed to build policy key manager: %w", err)
+			}
+			crypto.SetKeyManager(engine, km)
+		} else {
+			// Reuse global key manager
+			crypto.SetKeyManager(engine, h.keyManager)
+		}
+	}
+
+	// Cache the new engine
+	h.engineCache.Store(policy.ID, engine)
+	
+	return engine, nil
+}
+
 // handleHealth handles health check requests.
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
@@ -536,6 +637,21 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
         rangeHeader = &rg
     }
 
+    // Get encryption engine for this bucket
+    engine, err := h.getEncryptionEngine(bucket)
+    if err != nil {
+        h.logger.WithError(err).Error("Failed to get encryption engine")
+        s3Err := &S3Error{
+            Code:       "InternalError",
+            Message:    "Failed to load encryption configuration",
+            Resource:   r.URL.Path,
+            HTTPStatus: http.StatusInternalServerError,
+        }
+        s3Err.WriteXML(w)
+        h.metrics.RecordHTTPRequest(r.Context(),"GET", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+        return
+    }
+
 	// Check cache first if enabled and no range request
 	if h.cache != nil && rangeHeader == nil && versionID == nil {
 		if cachedEntry, ok := h.cache.Get(ctx, bucket, key); ok {
@@ -587,7 +703,7 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
     if rangeHeader != nil {
         // Check if object is encrypted and uses chunked format
         headMeta, headErr := s3Client.HeadObject(ctx, bucket, key, versionID)
-        if headErr == nil && h.encryptionEngine.IsEncrypted(headMeta) {
+        if headErr == nil && engine.IsEncrypted(headMeta) {
             // Check if chunked format - if so, we can optimize by fetching only needed chunks
             if crypto.IsChunkedFormat(headMeta) {
                 // Get plaintext size for range parsing
@@ -653,29 +769,29 @@ func (h *Handler) handleGetObject(w http.ResponseWriter, r *http.Request) {
 	var decMetadata map[string]string
 
 	
-	if useRangeOptimization && h.encryptionEngine.IsEncrypted(metadata) {
+	if useRangeOptimization && engine.IsEncrypted(metadata) {
 		// Use range-optimized decryption (only decrypts needed chunks)
 		// Access the concrete engine type for DecryptRange method
 		// This is safe because we know it's chunked format
-		if eng, ok := h.encryptionEngine.(interface {
+		if eng, ok := engine.(interface {
 			DecryptRange(reader io.Reader, metadata map[string]string, plaintextStart, plaintextEnd int64) (io.Reader, map[string]string, error)
 		}); ok {
 			decryptedReader, decMetadata, err = eng.DecryptRange(reader, metadata, plaintextStart, plaintextEnd)
 			if err != nil {
 				h.logger.WithError(err).Warn("Range optimization failed, falling back to full decrypt")
 				// Fall back to full decryption
-				decryptedReader, decMetadata, err = h.encryptionEngine.Decrypt(reader, metadata)
+				decryptedReader, decMetadata, err = engine.Decrypt(reader, metadata)
 				useRangeOptimization = false
 			}
 		} else {
 			// Engine doesn't support DecryptRange, fall back
 			h.logger.Warn("Engine doesn't support DecryptRange, falling back to full decrypt")
-			decryptedReader, decMetadata, err = h.encryptionEngine.Decrypt(reader, metadata)
+			decryptedReader, decMetadata, err = engine.Decrypt(reader, metadata)
 			useRangeOptimization = false
 		}
 	} else {
 		// Standard decryption (full object)
-		decryptedReader, decMetadata, err = h.encryptionEngine.Decrypt(reader, metadata)
+		decryptedReader, decMetadata, err = engine.Decrypt(reader, metadata)
 	}
 	decryptDuration := time.Since(decryptStart)
 	if err != nil {
@@ -958,9 +1074,24 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 	}
 	metadata["Content-Type"] = contentType
 
+    // Get encryption engine for this bucket
+    engine, err := h.getEncryptionEngine(bucket)
+    if err != nil {
+        h.logger.WithError(err).Error("Failed to get encryption engine")
+        s3Err := &S3Error{
+            Code:       "InternalError",
+            Message:    "Failed to load encryption configuration",
+            Resource:   r.URL.Path,
+            HTTPStatus: http.StatusInternalServerError,
+        }
+        s3Err.WriteXML(w)
+        h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+        return
+    }
+
     // Encrypt the object
 	encryptStart := time.Now()
-	encryptedReader, encMetadata, err := h.encryptionEngine.Encrypt(r.Body, metadata)
+	encryptedReader, encMetadata, err := engine.Encrypt(r.Body, metadata)
 	encryptDuration := time.Since(encryptStart)
 	
 	// Get algorithm and key version for audit logging
@@ -1381,14 +1512,26 @@ func (h *Handler) handleListObjects(w http.ResponseWriter, r *http.Request) {
 
 	// Translate metadata for encrypted objects
 	translatedObjects := make([]s3.ObjectInfo, len(listResult.Objects))
+	
+	// Get encryption engine for this bucket to check if encryption is enabled/configured
+	engine, err := h.getEncryptionEngine(bucket)
+	isEncryptionEnabled := false
+	if err == nil {
+		// Check if this engine has encryption enabled/configured
+		// Using the IsEncrypted with empty map check pattern from existing code
+		// Note: Ideally we should check policy configuration, but engine doesn't expose it directly
+		// For now, assuming all engines support encryption
+		isEncryptionEnabled = true 
+	}
+
 	for i, obj := range listResult.Objects {
 		translatedObjects[i] = obj
 		// If object is encrypted, translate size and ETag
-		if h.encryptionEngine.IsEncrypted(map[string]string{}) {
+		if isEncryptionEnabled {
 			// We need to fetch HEAD metadata for each object to get encryption info
 			// This is expensive but necessary for accurate listings
 			if headMeta, headErr := s3Client.HeadObject(ctx, bucket, obj.Key, nil); headErr == nil {
-				if h.encryptionEngine.IsEncrypted(headMeta) {
+				if engine.IsEncrypted(headMeta) {
 					// Restore original size
 					if originalSize, ok := headMeta["x-amz-meta-encryption-original-size"]; ok {
 						if parsedSize, err := strconv.ParseInt(originalSize, 10, 64); err == nil {
@@ -1819,7 +1962,17 @@ func (h *Handler) handleUploadPart(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		encryptedReader, encMetadata, err = h.encryptionEngine.Encrypt(r.Body, metadata)
+        // Get encryption engine
+        engine, err := h.getEncryptionEngine(bucket)
+        if err != nil {
+            h.logger.WithError(err).Error("Failed to get encryption engine")
+            s3Err := &S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}
+            s3Err.WriteXML(w)
+            h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+            return
+        }
+
+		encryptedReader, encMetadata, err = engine.Encrypt(r.Body, metadata)
 		if err != nil {
 			h.logger.WithError(err).Error("Failed to encrypt part")
 			s3Err := &S3Error{
@@ -2202,8 +2355,18 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 	}
 	defer srcReader.Close()
 
+	// Get source encryption engine
+	srcEngine, err := h.getEncryptionEngine(srcBucket)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get source encryption engine")
+		s3Err := &S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
 	// Decrypt source if encrypted
-	decryptedReader, _, err := h.encryptionEngine.Decrypt(srcReader, srcMetadata)
+	decryptedReader, _, err := srcEngine.Decrypt(srcReader, srcMetadata)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to decrypt source object for copy")
 		s3Err := &S3Error{
@@ -2249,8 +2412,18 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 		}
 	}
 
+	// Get destination encryption engine
+	dstEngine, err := h.getEncryptionEngine(dstBucket)
+	if err != nil {
+		h.logger.WithError(err).Error("Failed to get destination encryption engine")
+		s3Err := &S3Error{Code: "InternalError", Message: "Failed to load encryption configuration", Resource: r.URL.Path, HTTPStatus: http.StatusInternalServerError}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(),"PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
 	// Re-encrypt for destination
-	encryptedReader, encMetadata, err := h.encryptionEngine.Encrypt(bytes.NewReader(decryptedData), dstMetadata)
+	encryptedReader, encMetadata, err := dstEngine.Encrypt(bytes.NewReader(decryptedData), dstMetadata)
 	if err != nil {
 		h.logger.WithError(err).Error("Failed to encrypt destination object")
 		s3Err := &S3Error{

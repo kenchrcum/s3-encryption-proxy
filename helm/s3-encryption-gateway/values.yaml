@@ -78,6 +78,13 @@ config:
   logLevel:
     value: "info"
   
+  # Policy configuration
+  policies:
+    value: ""
+    valueFrom: {}
+    # Example:
+    # value: "/etc/s3-gateway/policies/*.yaml"
+  
   # Proxied bucket configuration (optional - restricts gateway to single bucket)
   proxiedBucket:
     value: ""

@@ -3,6 +3,11 @@ log_level: "info"
 # proxied_bucket: ""  # Optional: If set, the gateway will only proxy requests for this specific bucket
                       # Set via PROXIED_BUCKET env var
 
+# Policy Configuration
+# policies:
+#   - "/etc/s3-gateway/policies/*.yaml"
+# Set via POLICIES env var (comma-separated)
+
 backend:
   endpoint: "https://s3.amazonaws.com"
   region: "us-east-1"

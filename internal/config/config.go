@@ -31,6 +31,7 @@ type Config struct {
 	Tracing       TracingConfig     `yaml:"tracing"`
 	Metrics       MetricsConfig     `yaml:"metrics"`
 	Logging       LoggingConfig     `yaml:"logging"`
+	PolicyFiles   []string          `yaml:"policies" env:"POLICIES"`
 }
 
 // BackendConfig holds S3 backend configuration.
@@ -572,6 +573,12 @@ func loadFromEnv(config *Config) {
 		config.Logging.RedactHeaders = strings.Split(v, ",")
 		for i := range config.Logging.RedactHeaders {
 			config.Logging.RedactHeaders[i] = strings.TrimSpace(config.Logging.RedactHeaders[i])
+		}
+	}
+	if v := os.Getenv("POLICIES"); v != "" {
+		config.PolicyFiles = strings.Split(v, ",")
+		for i := range config.PolicyFiles {
+			config.PolicyFiles[i] = strings.TrimSpace(config.PolicyFiles[i])
 		}
 	}
 }

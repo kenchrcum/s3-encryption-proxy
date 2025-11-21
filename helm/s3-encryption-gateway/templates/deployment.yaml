@@ -141,6 +141,9 @@ spec:
         {{- end }}
         {{- end }}
         {{- end }}
+        {{- if or .Values.config.policies.value .Values.config.policies.valueFrom }}
+        {{- include "s3-encryption-gateway.envVar" (dict "name" "POLICIES" "value" .Values.config.policies.value "valueFrom" .Values.config.policies.valueFrom) | nindent 8 }}
+        {{- end }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "RATE_LIMIT_ENABLED" "value" .Values.config.rateLimit.enabled.value "valueFrom" .Values.config.rateLimit.enabled.valueFrom) | nindent 8 }}
         {{- if or (eq .Values.config.rateLimit.enabled.value "true") (eq .Values.config.rateLimit.enabled.value "1") }}
         {{- include "s3-encryption-gateway.envVar" (dict "name" "RATE_LIMIT_REQUESTS" "value" .Values.config.rateLimit.limit.value "valueFrom" .Values.config.rateLimit.limit.valueFrom) | nindent 8 }}

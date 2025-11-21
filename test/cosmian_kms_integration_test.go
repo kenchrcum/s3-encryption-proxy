@@ -938,7 +938,7 @@ func StartGatewayWithKMS(t *testing.T, cfg *config.Config, manager crypto.KeyMan
 	crypto.SetKeyManager(encryptionEngine, manager)
 
 	// Initialize API handler
-	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, cfg)
+	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, cfg, nil)
 
 	// Setup router
 	router := mux.NewRouter()

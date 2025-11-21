@@ -83,7 +83,7 @@ func StartGateway(t *testing.T, cfg *config.Config) *TestGateway {
 	}
 
 	// Initialize API handler with config support (required for useClientCredentials)
-	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, cfg)
+	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, nil, nil, nil, cfg, nil)
 
 	// Setup router
 	router := mux.NewRouter()

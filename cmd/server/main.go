@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"net/http"
 	"os"
@@ -282,89 +280,6 @@ func InitTracing(cfg config.TracingConfig, logger *logrus.Logger) (*sdktrace.Tra
 	return tp, nil
 }
 
-func buildKeyManager(cfg *config.Config, logger *logrus.Logger) (crypto.KeyManager, error) {
-	provider := strings.ToLower(cfg.Encryption.KeyManager.Provider)
-	if provider == "" {
-		provider = "cosmian"
-	}
-
-	switch provider {
-	case "cosmian", "kmip":
-		return newCosmianKeyManager(cfg.Encryption.KeyManager, logger)
-	default:
-		return nil, fmt.Errorf("unsupported key manager provider %q", provider)
-	}
-}
-
-func newCosmianKeyManager(kmCfg config.KeyManagerConfig, logger *logrus.Logger) (crypto.KeyManager, error) {
-	if kmCfg.Cosmian.Endpoint == "" {
-		return nil, fmt.Errorf("cosmian.key_manager.endpoint is required")
-	}
-	if len(kmCfg.Cosmian.Keys) == 0 {
-		return nil, fmt.Errorf("cosmian.key_manager.keys must include at least one wrapping key reference")
-	}
-
-	tlsCfg, err := buildCosmianTLSConfig(kmCfg.Cosmian)
-	if err != nil {
-		return nil, err
-	}
-
-	keyRefs := make([]crypto.KMIPKeyReference, 0, len(kmCfg.Cosmian.Keys))
-	for i, key := range kmCfg.Cosmian.Keys {
-		if key.ID == "" {
-			return nil, fmt.Errorf("cosmian.key_manager.keys[%d].id is required", i)
-		}
-		version := key.Version
-		if version == 0 {
-			version = i + 1
-		}
-		keyRefs = append(keyRefs, crypto.KMIPKeyReference{
-			ID:      key.ID,
-			Version: version,
-		})
-	}
-
-	opts := crypto.CosmianKMIPOptions{
-		Endpoint:       kmCfg.Cosmian.Endpoint,
-		Keys:           keyRefs,
-		TLSConfig:      tlsCfg,
-		Timeout:        kmCfg.Cosmian.Timeout,
-		Provider:       "cosmian-kmip",
-		DualReadWindow: kmCfg.DualReadWindow,
-	}
-
-	return crypto.NewCosmianKMIPManager(opts)
-}
-
-func buildCosmianTLSConfig(cfg config.CosmianConfig) (*tls.Config, error) {
-	tlsCfg := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: cfg.InsecureSkipVerify,
-	}
-
-	if cfg.CACert != "" {
-		caData, err := os.ReadFile(cfg.CACert)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read Cosmian CA certificate: %w", err)
-		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(caData) {
-			return nil, fmt.Errorf("failed to parse Cosmian CA certificate")
-		}
-		tlsCfg.RootCAs = pool
-	}
-
-	if cfg.ClientCert != "" && cfg.ClientKey != "" {
-		cert, err := tls.LoadX509KeyPair(cfg.ClientCert, cfg.ClientKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load Cosmian client certificate: %w", err)
-		}
-		tlsCfg.Certificates = append(tlsCfg.Certificates, cert)
-	}
-
-	return tlsCfg, nil
-}
-
 func main() {
 	// Initialize logger
 	logger := logrus.New()
@@ -461,7 +376,7 @@ func main() {
 
 	activePassword := encryptionPassword
 	if cfg.Encryption.KeyManager.Enabled {
-		keyManager, err = buildKeyManager(cfg, logger)
+		keyManager, err = api.BuildKeyManager(&cfg.Encryption.KeyManager, logger)
 		if err != nil {
 			logger.WithError(err).Fatal("Failed to initialize key manager")
 		}
@@ -579,8 +494,18 @@ func main() {
 		}).Info("Audit logging enabled")
 	}
 
+	// Initialize policy manager if policy files are configured
+	var policyManager *config.PolicyManager
+	if len(cfg.PolicyFiles) > 0 {
+		policyManager = config.NewPolicyManager()
+		if err := policyManager.LoadPolicies(cfg.PolicyFiles); err != nil {
+			logger.WithError(err).Fatal("Failed to load policy files")
+		}
+		logger.WithField("count", len(cfg.PolicyFiles)).Info("Policy files loaded")
+	}
+
 	// Initialize API handler with Phase 5 features
-	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger, cfg)
+	handler := api.NewHandlerWithFeatures(s3Client, encryptionEngine, logger, m, keyManager, objectCache, auditLogger, cfg, policyManager)
 
 	// Initialize configuration hot-reload (only if config file is specified)
 	var configReloader *config.ConfigReloader
