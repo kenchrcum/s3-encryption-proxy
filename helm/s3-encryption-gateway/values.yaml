@@ -34,6 +34,8 @@ securityContext:
     - ALL
   readOnlyRootFilesystem: true
   allowPrivilegeEscalation: false
+  seccompProfile:
+    type: RuntimeDefault
 
 service:
   # Enable Service creation. Set to false if deploying multiple instances
@@ -518,6 +520,24 @@ networkPolicy:
   namespaceLabel:
     key: "kubernetes.io/metadata.name"
     # value will be set to Release.Namespace automatically
+  # Egress rules for common topologies
+  egress:
+    # Enable AWS S3 egress rules (adjust CIDRs for your specific regions)
+    awsS3: false
+    # Enable MinIO internal cluster egress rules
+    minioInternal: false
+    # Enable monitoring and logging service egress rules
+    monitoring: false
+  # Ingress rules for common topologies
+  ingress:
+    # Enable ingress from ingress controllers
+    ingressControllers: false
+    # Namespace for ingress controllers (default: ingress-nginx)
+    ingressNamespace: "ingress-nginx"
+    # Enable ingress from monitoring services
+    monitoring: false
+    # Namespace for monitoring services (default: monitoring)
+    monitoringNamespace: "monitoring"
 
 nodeSelector: {}
 

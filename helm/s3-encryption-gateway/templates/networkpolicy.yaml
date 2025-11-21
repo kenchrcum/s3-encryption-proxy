@@ -34,14 +34,91 @@ spec:
     - port: {{ .Values.service.targetPort }}
       protocol: TCP
   {{- end }}
+  # Example: Allow ingress from ingress controllers (nginx, traefik, etc.)
+  {{- if .Values.networkPolicy.ingress.ingressControllers }}
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          {{ .Values.networkPolicy.namespaceLabel.key }}: {{ .Values.networkPolicy.ingress.ingressNamespace | default "ingress-nginx" }}
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    ports:
+    - port: {{ .Values.service.targetPort }}
+      protocol: TCP
+  {{- end }}
+  # Example: Allow ingress from monitoring services (prometheus, etc.)
+  {{- if .Values.networkPolicy.ingress.monitoring }}
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          {{ .Values.networkPolicy.namespaceLabel.key }}: {{ .Values.networkPolicy.ingress.monitoringNamespace | default "monitoring" }}
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - port: {{ .Values.service.targetPort }}
+      protocol: TCP
+  {{- end }}
   {{- if has "Egress" .Values.networkPolicy.policyTypes }}
   egress:
-  # Allow all egress (needed for S3 backend communication)
-  # Empty namespaceSelector and podSelector match all namespaces and pods
+  # Allow DNS resolution
+  - to: []
+    ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  # Allow egress to S3 backends (AWS S3, MinIO, Wasabi, Hetzner)
+  # Example: AWS S3 endpoints
+  {{- if .Values.networkPolicy.egress.awsS3 }}
   - to:
-    - namespaceSelector: {}
-      podSelector: {}
-  # Allow egress to external IPs (for S3 backends)
+    - ipBlock:
+        cidr: 52.216.0.0/15  # AWS S3 us-east-1 (example - adjust for your region)
+    - ipBlock:
+        cidr: 54.231.0.0/16  # AWS S3 global
+    ports:
+    - port: 443
+      protocol: TCP
+  {{- end }}
+  # Example: MinIO internal cluster communication
+  {{- if .Values.networkPolicy.egress.minioInternal }}
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: minio  # Adjust namespace label as needed
+      podSelector:
+        matchLabels:
+          app: minio
+    ports:
+    - port: 9000
+      protocol: TCP
+  {{- end }}
+  # Example: Monitoring and logging services
+  {{- if .Values.networkPolicy.egress.monitoring }}
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: monitoring  # Adjust namespace label as needed
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: prometheus
+    ports:
+    - port: 9090
+      protocol: TCP
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: logging  # Adjust namespace label as needed
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: loki
+    ports:
+    - port: 3100
+      protocol: TCP
+  {{- end }}
+  # Allow all egress to external IPs (fallback for unspecified S3 backends)
+  # Consider restricting this based on your specific S3 provider
   - to:
     - ipBlock:
         cidr: 0.0.0.0/0
