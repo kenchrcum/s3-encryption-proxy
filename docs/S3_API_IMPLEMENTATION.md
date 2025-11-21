@@ -148,7 +148,7 @@ backendClient := s3.New(session.Must(session.NewSession(&aws.Config{
 - `ETag` (modified for encrypted content)
 - `Last-Modified`
 - `x-amz-meta-*` (user metadata)
-- `x-amz-tagging`
+- `x-amz-tagging` (validated: max 10 tags, key ≤128 chars, value ≤256 chars)
 - `x-amz-version-id`
 
 ### Added Encryption Metadata
@@ -161,6 +161,30 @@ backendClient := s3.New(session.Must(session.NewSession(&aws.Config{
 ### Hidden Headers
 - Never expose backend-specific headers
 - Filter internal encryption metadata from client responses
+
+## Object Tagging Support
+
+### PUT Object Tagging
+- **Endpoint**: `PUT /{bucket}/{key}?tagging`
+- **Implementation**:
+  - Validates tag format and limits before forwarding to backend
+  - Tags are passed through unchanged to maintain compatibility
+
+### GET Object Tagging
+- **Endpoint**: `GET /{bucket}/{key}?tagging`
+- **Implementation**:
+  - Retrieves tags from backend and returns them unchanged
+
+### Tag Validation (PUT Operations)
+- **Maximum Tags**: 10 tags per object
+- **Key Constraints**:
+  - Length: 1-128 characters
+  - Characters: alphanumeric, spaces, and symbols: `+ - = . _ : /`
+  - Cannot be empty or contain only whitespace
+- **Value Constraints**:
+  - Length: 0-256 characters (empty values allowed)
+  - Characters: alphanumeric, spaces, and symbols: `+ - = . _ : /`
+- **Error Response**: InvalidArgument (400) with descriptive message for validation failures
 
 ## Encryption Metadata Format
 

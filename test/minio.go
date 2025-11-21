@@ -228,7 +228,7 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) error {
 
 			// Wait a bit for MinIO to start
 			time.Sleep(3 * time.Second)
-			m.Endpoint = "http://localhost:9000"
+			m.Endpoint = "http://127.0.0.1:9000"
 
 			// Verify MinIO is running
 			if err := m.waitForMinIO(); err != nil {
@@ -258,7 +258,7 @@ func (m *MinIOTestServer) startDockerMinIO(t *testing.T) error {
 	// Fallback: Start MinIO container directly
 	containerName := fmt.Sprintf("minio-test-%d", time.Now().Unix())
 	port := "9000"
-	m.Endpoint = fmt.Sprintf("http://localhost:%s", port)
+	m.Endpoint = fmt.Sprintf("http://127.0.0.1:%s", port)
 
 	// Start MinIO in Docker
 	// Use environment variables if set, otherwise use the configured values
@@ -321,7 +321,7 @@ func (m *MinIOTestServer) startBinaryMinIO(t *testing.T) error {
 	m.DataDir = dataDir
 
 	port := "9000"
-	m.Endpoint = fmt.Sprintf("http://localhost:%s", port)
+	m.Endpoint = fmt.Sprintf("http://127.0.0.1:%s", port)
 
 	// Start MinIO server
 	cmd := exec.Command("minio", "server", dataDir,
@@ -470,7 +470,7 @@ func (m *MinIOTestServer) createBucketViaSDK() error {
 
 	// Try multiple times in case MinIO needs a moment to be ready
 	for attempts := 0; attempts < 5; attempts++ {
-		err = client.PutObject(ctx, m.Bucket, testKey, emptyReader, nil, nil)
+		err = client.PutObject(ctx, m.Bucket, testKey, emptyReader, nil, nil, "")
 		if err == nil {
 			fmt.Printf("Successfully created bucket %s via SDK\n", m.Bucket)
 			return nil
@@ -518,7 +518,7 @@ func (m *MinIOTestServer) GetS3Client() (s3.Client, error) {
 // GetGatewayConfig returns gateway configuration for testing.
 func (m *MinIOTestServer) GetGatewayConfig() *config.Config {
 	return &config.Config{
-		ListenAddr: ":18080", // Use different port to avoid conflicts
+		ListenAddr: "127.0.0.1:0", // Use random available port on loopback
 		LogLevel:   "info",
 		Backend: config.BackendConfig{
 			Endpoint:  m.Endpoint,

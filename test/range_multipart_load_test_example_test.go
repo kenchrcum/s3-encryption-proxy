@@ -2,6 +2,7 @@ package test
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -104,14 +105,40 @@ func TestRunLoadTests(t *testing.T) {
 		return
 	}
 
+	// Determine gateway URL
+	gatewayURL := "http://localhost:8080"
+	bucketName := "test-bucket"
+
+	// Check if gateway is running on default port
+	if _, err := http.Get(gatewayURL + "/health"); err != nil {
+		// Not running, try to start ephemeral gateway for testing
+		t.Log("Gateway not running at localhost:8080, starting ephemeral gateway...")
+		
+		// Start MinIO
+		minioServer := StartMinIOServer(t)
+		if minioServer == nil {
+			t.Skip("MinIO server not available for load tests")
+		}
+		bucketName = minioServer.Bucket
+		
+		// Start Gateway
+		cfg := minioServer.GetGatewayConfig()
+		gw := StartGateway(t, cfg)
+		defer gw.Close()
+		
+		gatewayURL = gw.URL
+		t.Logf("Started ephemeral gateway at %s", gatewayURL)
+	}
+
 	fmt.Println("=== Running Comprehensive Load Test Suite ===")
 
 	// Range load test
 	fmt.Println("1. Running Range Load Test")
 	rangeConfig := RangeLoadTestConfig{
-		GatewayURL:          "http://localhost:8080",
+		GatewayURL:          gatewayURL,
+		Bucket:              bucketName,
 		NumWorkers:          8,
-		Duration:            45 * time.Second,
+		Duration:            10 * time.Second, // Reduced for CI
 		QPS:                 40,
 		ObjectSize:          50 * 1024 * 1024, // 50MB
 		ChunkSize:           64 * 1024,        // 64KB chunks
@@ -121,16 +148,17 @@ func TestRunLoadTests(t *testing.T) {
 
 	rangeResults, err := RunRangeLoadTest(rangeConfig, logger)
 	if err != nil {
-		fmt.Printf("Range load test failed: %v\n", err)
+		t.Errorf("Range load test failed: %v", err) // Use Errorf instead of returning to run cleanup
 		return
 	}
 
 	// Multipart load test
 	fmt.Println("\n2. Running Multipart Load Test")
 	multipartConfig := MultipartLoadTestConfig{
-		GatewayURL:          "http://localhost:8080",
+		GatewayURL:          gatewayURL,
+		Bucket:              bucketName,
 		NumWorkers:          4,
-		Duration:            90 * time.Second,
+		Duration:            10 * time.Second, // Reduced for CI
 		QPS:                 5,
 		ObjectSize:          200 * 1024 * 1024, // 200MB
 		PartSize:            50 * 1024 * 1024,  // 50MB parts
@@ -140,7 +168,7 @@ func TestRunLoadTests(t *testing.T) {
 
 	multipartResults, err := RunMultipartLoadTest(multipartConfig, logger)
 	if err != nil {
-		fmt.Printf("Multipart load test failed: %v\n", err)
+		t.Errorf("Multipart load test failed: %v", err)
 		return
 	}
 
@@ -212,11 +240,37 @@ func TestRunLoadTestWithPrometheus(t *testing.T) {
 	logger := logrus.New()
 	logger.SetLevel(logrus.InfoLevel)
 
+	// Determine gateway URL
+	gatewayURL := "http://localhost:8080"
+	bucketName := "test-bucket"
+
+	// Check if gateway is running on default port
+	if _, err := http.Get(gatewayURL + "/health"); err != nil {
+		// Not running, try to start ephemeral gateway for testing
+		t.Log("Gateway not running at localhost:8080, starting ephemeral gateway...")
+		
+		// Start MinIO
+		minioServer := StartMinIOServer(t)
+		if minioServer == nil {
+			t.Skip("MinIO server not available for load tests")
+		}
+		bucketName = minioServer.Bucket
+		
+		// Start Gateway
+		cfg := minioServer.GetGatewayConfig()
+		gw := StartGateway(t, cfg)
+		defer gw.Close()
+		
+		gatewayURL = gw.URL
+		t.Logf("Started ephemeral gateway at %s", gatewayURL)
+	}
+
 	// This example shows how to integrate with Prometheus for additional metrics
 	config := RangeLoadTestConfig{
-		GatewayURL:          "http://localhost:8080",
+		GatewayURL:          gatewayURL,
+		Bucket:              bucketName,
 		NumWorkers:          5,
-		Duration:            30 * time.Second,
+		Duration:            10 * time.Second, // Reduced for CI
 		QPS:                 25,
 		ObjectSize:          10 * 1024 * 1024, // 10MB
 		ChunkSize:           64 * 1024,        // 64KB chunks

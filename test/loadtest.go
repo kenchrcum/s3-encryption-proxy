@@ -23,6 +23,7 @@ import (
 // RangeLoadTestConfig holds configuration for range-specific load testing.
 type RangeLoadTestConfig struct {
 	GatewayURL       string
+	Bucket           string // Target bucket name
 	NumWorkers       int
 	Duration         time.Duration
 	QPS              int
@@ -43,6 +44,7 @@ type RangeTestScenario struct {
 // MultipartLoadTestConfig holds configuration for multipart-specific load testing.
 type MultipartLoadTestConfig struct {
 	GatewayURL       string
+	Bucket           string // Target bucket name
 	NumWorkers       int
 	Duration         time.Duration
 	QPS              int
@@ -248,7 +250,12 @@ func prepareRangeTestObjects(config RangeLoadTestConfig, scenarios []RangeTestSc
 		data[i] = byte(i % 256)
 	}
 
-	putURL := fmt.Sprintf("%s/test-bucket/%s", config.GatewayURL, objectKey)
+	bucket := config.Bucket
+	if bucket == "" {
+		bucket = "test-bucket"
+	}
+
+	putURL := fmt.Sprintf("%s/%s/%s", config.GatewayURL, bucket, objectKey)
 	req, err := http.NewRequest("PUT", putURL, bytes.NewReader(data))
 	if err != nil {
 		return err
@@ -310,7 +317,11 @@ func runRangeLoadTestInternal(config RangeLoadTestConfig, scenarios []RangeTestS
 
 					reqStart := time.Now()
 					objectKey := "range-test-object"
-					getURL := fmt.Sprintf("%s/test-bucket/%s", config.GatewayURL, objectKey)
+					bucket := config.Bucket
+					if bucket == "" {
+						bucket = "test-bucket"
+					}
+					getURL := fmt.Sprintf("%s/%s/%s", config.GatewayURL, bucket, objectKey)
 
 					req, err := http.NewRequest("GET", getURL, nil)
 					if err != nil {
@@ -488,7 +499,11 @@ func runMultipartLoadTestInternal(config MultipartLoadTestConfig, logger *logrus
 
 // performFullMultipartUpload performs a complete multipart upload operation.
 func performFullMultipartUpload(client *http.Client, config MultipartLoadTestConfig, objectKey string, logger *logrus.Logger) error {
-	url := fmt.Sprintf("%s/test-bucket/%s", config.GatewayURL, objectKey)
+	bucket := config.Bucket
+	if bucket == "" {
+		bucket = "test-bucket"
+	}
+	url := fmt.Sprintf("%s/%s/%s", config.GatewayURL, bucket, objectKey)
 
 	// Generate data
 	data := make([]byte, config.ObjectSize)

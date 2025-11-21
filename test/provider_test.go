@@ -81,7 +81,14 @@ func TestMain(m *testing.M) {
 	fmt.Println()
 
 	// Run tests
-	os.Exit(m.Run())
+	code := m.Run()
+
+	// Cleanup shared MinIO server
+	if minioServer != nil {
+		minioServer.StopForce()
+	}
+
+	os.Exit(code)
 }
 
 // TestProvider_Compatibility tests that the gateway works with MinIO as a provider.
@@ -115,7 +122,7 @@ func TestProvider_Compatibility(t *testing.T) {
 
 	// Put object
 	ctx := context.Background()
-	err = client.PutObject(ctx, bucket, key, bytes.NewReader(testData), nil, nil)
+	err = client.PutObject(ctx, bucket, key, bytes.NewReader(testData), nil, nil, "")
 	if err != nil {
 		t.Fatalf("PutObject failed with MinIO provider: %v", err)
 	}

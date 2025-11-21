@@ -1446,15 +1446,3 @@ func TestS3Gateway_ErrorHandling(t *testing.T) {
 	}
 }
 
-// TestZZZ_Cleanup runs last to clean up the MinIO server
-func TestZZZ_Cleanup(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping cleanup test in short mode")
-	}
-
-	// Only run if we have a MinIO server instance
-	if minioServer != nil {
-		t.Log("Cleaning up MinIO server...")
-		minioServer.StopForce()
-	}
-}

@@ -1071,6 +1071,21 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract tagging header
+	tagging := r.Header.Get("x-amz-tagging")
+	if err := validateTags(tagging); err != nil {
+		h.logger.WithError(err).Error("Invalid tagging header")
+		s3Err := &S3Error{
+			Code:       "InvalidArgument",
+			Message:    err.Error(),
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusBadRequest,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
 	// Extract metadata from headers (preserve original metadata)
 	// Only include x-amz-meta-* headers - standard headers should NOT be included
 	// as they will cause S3 API errors when sent as metadata
@@ -1245,7 +1260,7 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request) {
     }
 
     // Upload encrypted object with filtered metadata (streaming)
-    err = s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr)
+    err = s3Client.PutObject(ctx, bucket, key, encryptedReader, s3Metadata, contentLengthPtr, tagging)
 	if err != nil {
 		s3Err := TranslateError(err, bucket, key)
 		s3Err.WriteXML(w)
@@ -2364,6 +2379,21 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 
 	ctx := r.Context()
 
+	// Extract tagging header
+	tagging := r.Header.Get("x-amz-tagging")
+	if err := validateTags(tagging); err != nil {
+		h.logger.WithError(err).Error("Invalid tagging header")
+		s3Err := &S3Error{
+			Code:       "InvalidArgument",
+			Message:    err.Error(),
+			Resource:   r.URL.Path,
+			HTTPStatus: http.StatusBadRequest,
+		}
+		s3Err.WriteXML(w)
+		h.metrics.RecordHTTPRequest(r.Context(), "PUT", r.URL.Path, s3Err.HTTPStatus, time.Since(start), 0)
+		return
+	}
+
 	// Get source object (decrypt if encrypted)
 	srcReader, srcMetadata, err := s3Client.GetObject(ctx, srcBucket, srcKey, srcVersionID, nil)
 	if err != nil {
@@ -2487,7 +2517,7 @@ func (h *Handler) handleCopyObject(w http.ResponseWriter, r *http.Request, dstBu
 
     // Upload encrypted copy with filtered metadata and known content length
     encLen := int64(len(encryptedData))
-    err = s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen)
+    err = s3Client.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(encryptedData), s3Metadata, &encLen, tagging)
 	if err != nil {
 		s3Err := TranslateError(err, dstBucket, dstKey)
 		s3Err.WriteXML(w)

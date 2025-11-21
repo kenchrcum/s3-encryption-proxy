@@ -34,7 +34,7 @@ func newMockS3Client() *mockS3Client {
 	}
 }
 
-func (m *mockS3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64) error {
+func (m *mockS3Client) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string) error {
 	if err := m.errors[bucket+"/"+key+"/put"]; err != nil {
 		return err
 	}
@@ -191,7 +191,7 @@ func (m *mockS3Client) CopyObject(ctx context.Context, dstBucket, dstKey string,
 	data, _ := io.ReadAll(srcReader)
 	
 	// Put as destination
-    if err := m.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(data), metadata, nil); err != nil {
+    if err := m.PutObject(ctx, dstBucket, dstKey, bytes.NewReader(data), metadata, nil, ""); err != nil {
 		return "", nil, err
 	}
 	
@@ -334,7 +334,7 @@ func TestHandler_HandleGetObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil)
+    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "")
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -361,7 +361,7 @@ func TestHandler_HandleDeleteObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil)
+    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test data")), nil, nil, "")
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -390,7 +390,7 @@ func TestHandler_HandleHeadObject(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	metadata := map[string]string{"content-type": "text/plain"}
-    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test")), metadata, nil)
+    mockClient.PutObject(context.Background(), "test-bucket", "test-key", bytes.NewReader([]byte("test")), metadata, nil, "")
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -413,8 +413,8 @@ func TestHandler_HandleListObjects(t *testing.T) {
 	handler := NewHandler(mockClient, mockEngine, logger, getTestMetrics())
 
 	// Pre-populate with test data
-    mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil)
-    mockClient.PutObject(context.Background(), "test-bucket", "key2", bytes.NewReader([]byte("data2")), nil, nil)
+    mockClient.PutObject(context.Background(), "test-bucket", "key1", bytes.NewReader([]byte("data1")), nil, nil, "")
+    mockClient.PutObject(context.Background(), "test-bucket", "key2", bytes.NewReader([]byte("data2")), nil, nil, "")
 
 	router := mux.NewRouter()
 	handler.RegisterRoutes(router)
@@ -452,7 +452,7 @@ func TestHandler_HandleListObjects_Delimiter(t *testing.T) {
 	}
 
 	for _, obj := range testObjects {
-		mockClient.PutObject(context.Background(), "test-bucket", obj.key, strings.NewReader(obj.data), nil, nil)
+		mockClient.PutObject(context.Background(), "test-bucket", obj.key, strings.NewReader(obj.data), nil, nil, "")
 	}
 
 	router := mux.NewRouter()
@@ -538,7 +538,7 @@ func TestHandler_HandleListObjects_ContinuationToken(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		key := fmt.Sprintf("object%03d.txt", i)
 		data := fmt.Sprintf("data%d", i)
-		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil)
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil, "")
 	}
 
 	router := mux.NewRouter()
@@ -581,7 +581,7 @@ func TestHandler_HandleListObjects_Prefix(t *testing.T) {
 	}
 
 	for _, key := range testObjects {
-		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader("test data"), nil, nil)
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader("test data"), nil, nil, "")
 	}
 
 	router := mux.NewRouter()
@@ -654,7 +654,7 @@ func TestHandler_HandleListObjects_MaxKeys(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		key := fmt.Sprintf("object%d.txt", i)
 		data := fmt.Sprintf("data%d", i)
-		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil)
+		mockClient.PutObject(context.Background(), "test-bucket", key, strings.NewReader(data), nil, nil, "")
 	}
 
 	router := mux.NewRouter()
@@ -724,7 +724,7 @@ func TestContentRangeMapping(t *testing.T) {
 
 	// Create mock S3 client and populate it
 	mockClient := newMockS3Client()
-	mockClient.PutObject(context.Background(), "test-bucket", "range-test", bytes.NewReader(encryptedData), metadata, nil)
+	mockClient.PutObject(context.Background(), "test-bucket", "range-test", bytes.NewReader(encryptedData), metadata, nil, "")
 
 	// Create handler
 	logger := logrus.New()

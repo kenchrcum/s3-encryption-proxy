@@ -92,7 +92,7 @@ func (p *ProxyClient) ForwardRequest(ctx context.Context, originalReq *http.Requ
 }
 
 // PutObject forwards a PUT request to the backend.
-func (p *ProxyClient) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64) error {
+func (p *ProxyClient) PutObject(ctx context.Context, bucket, key string, reader io.Reader, metadata map[string]string, contentLength *int64, tags string) error {
 	return fmt.Errorf("ProxyClient.PutObject not implemented - use ForwardRequest in handler")
 }
 
