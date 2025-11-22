@@ -136,6 +136,8 @@ This roadmap outlines potential future improvements, grouped by milestones and t
 - Adaptive compression based on content sampling and size.
 - Pluggable authorization layer (optional) for multi-tenant deployments.
 - QUIC/HTTP3 support when upstream libs stabilize.
+- Cryptographic log integrity for audit trails.
+- Optional digital signatures for operation verification.
 
 ## Acceptance Criteria Examples
 

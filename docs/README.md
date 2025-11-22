@@ -26,7 +26,7 @@ This directory contains comprehensive documentation for the S3 Encryption Gatewa
 
 ## Security & Operations
 
-- **[SECURITY_AUDIT.md](SECURITY_AUDIT.md)** - Security audit recommendations and checklist
+- **[SECURITY_AUDIT.md](SECURITY_AUDIT.md)** - STRIDE threat model, security hardening guide, and audit recommendations
 
 ## Planning
 
